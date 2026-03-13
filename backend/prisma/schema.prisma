@@ -1,0 +1,75 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum StageStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum ProjectStatus {
+  DRAFT
+  SCRIPT_READY
+  AUDIO_READY
+  VISUAL_READY
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id             String         @id @default(cuid())
+  email          String         @unique
+  name           String?
+  avatarUrl      String?
+  subscription   SubscriptionPlan @default(FREE)
+  creditsBalance Int            @default(0)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  projects       VideoProject[]
+
+  @@index([subscription])
+}
+
+model VideoProject {
+  id              String        @id @default(cuid())
+  userId          String
+  title           String?
+  topic           String
+  sourceUrl       String?
+
+  overallStatus   ProjectStatus @default(DRAFT)
+  scriptStatus    StageStatus   @default(PENDING)
+  audioStatus     StageStatus   @default(PENDING)
+  visualStatus    StageStatus   @default(PENDING)
+  videoStatus     StageStatus   @default(PENDING)
+
+  scriptJson      Json?
+  audioUrl        String?
+  audioDurationMs Int?
+  timestampsJson  Json?
+  imagesJson      Json?
+  videoUrl        String?
+  errorMessage    String?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([overallStatus])
+}
