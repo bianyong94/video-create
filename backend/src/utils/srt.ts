@@ -50,13 +50,20 @@ function splitToSubtitles(words: WordTimestamp[], offsetMs: number): SubtitleLin
   return subtitles;
 }
 
-export function buildSrt(
+export function buildSubtitleLines(
   scenes: Array<{ timestamps: WordTimestamp[]; offsetMs: number }>
-): string {
+): SubtitleLine[] {
   const lines: SubtitleLine[] = [];
   scenes.forEach((scene) => {
     lines.push(...splitToSubtitles(scene.timestamps, scene.offsetMs));
   });
+  return lines;
+}
+
+export function buildSrt(
+  scenes: Array<{ timestamps: WordTimestamp[]; offsetMs: number }>
+): string {
+  const lines = buildSubtitleLines(scenes);
 
   return lines
     .map((line, index) => {

@@ -118,7 +118,11 @@ export async function synthesizeWithDashScope(
 
       if (event === "task-failed") {
         cleanup();
-        reject(new Error(message.header.error_message ?? "DashScope TTS failed."));
+        const errorMessage =
+          "error_message" in message.header
+            ? message.header.error_message
+            : undefined;
+        reject(new Error(errorMessage ?? "DashScope TTS failed."));
       }
     });
 

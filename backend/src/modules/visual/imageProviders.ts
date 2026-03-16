@@ -6,6 +6,8 @@ type ImageResult = {
 };
 
 type QwenResponse = {
+  code?: string;
+  message?: string;
   output?: {
     task_id?: string;
     task_status?: string;
@@ -32,6 +34,10 @@ type CogViewResponse = {
     url?: string;
     b64_json?: string;
   }>;
+  error?: {
+    code?: string;
+    message?: string;
+  };
 };
 
 export class ImageProviderError extends Error {
@@ -81,10 +87,14 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isRetriableQwenStatus(status?: string): boolean {
+  return status === "PENDING" || status === "RUNNING" || status === "QUEUED" || !status;
+}
+
 async function pollQwenTask(taskId: string): Promise<QwenResponse> {
   const config = getImageConfig();
   const taskUrl = `${config.qwenApiBase}/api/v1/tasks/${taskId}`;
-  const timeoutMs = Math.max(30000, config.qwenTaskTimeoutMs);
+  const timeoutMs = Math.max(90000, config.qwenTaskTimeoutMs);
   const intervalMs = Math.max(800, config.qwenTaskPollIntervalMs);
   const maxAttempts = Math.ceil(timeoutMs / intervalMs);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -104,9 +114,16 @@ async function pollQwenTask(taskId: string): Promise<QwenResponse> {
       const message = data.output?.message ?? "Qwen image task failed";
       throw new ImageProviderError("qwen", code, `Qwen image task failed: ${code} ${message}`);
     }
+    if (!isRetriableQwenStatus(status)) {
+      throw new ImageProviderError(
+        "qwen",
+        status ?? "UnexpectedStatus",
+        `Qwen image task returned unexpected status: ${status ?? "unknown"}`
+      );
+    }
     await sleep(intervalMs);
   }
-  throw new Error("Qwen image task timeout.");
+  throw new ImageProviderError("qwen", "TaskTimeout", "Qwen image task timeout.");
 }
 
 export async function generateImage(

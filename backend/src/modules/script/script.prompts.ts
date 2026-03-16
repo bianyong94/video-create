@@ -6,6 +6,8 @@ export function buildSystemPrompt(sceneCount: number): string {
     `{"scenes":[{"scene_id":1,"narration_text":"...","image_prompt":"..."}]}`,
     "Rules:",
     "- narration_text should be concise Chinese voiceover, 1-2 sentences per scene.",
+    "- narration_text must stay within 30 Chinese characters when possible, and never exceed 60 Chinese characters.",
+    "- Each scene should feel like 3-8 seconds of narration for a short video.",
     "- image_prompt should be vivid Chinese visual description for text-to-image.",
     `- Total scenes should be exactly ${sceneCount}.`,
     "- scene_id must be a number starting from 1 and increment by 1.",

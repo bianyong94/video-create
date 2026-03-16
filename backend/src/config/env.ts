@@ -45,6 +45,14 @@ type SunoEnv = {
   sunoTimeoutMs: number;
 };
 
+type VideoEnv = {
+  audioConcurrency: number;
+  videoFps: number;
+  minSceneDurationMs: number;
+  maxSceneDurationMs: number;
+  charsPerSecond: number;
+};
+
 export const env = {
   qwenChatApiKey:
     process.env.QWEN_CHAT_API_KEY ?? process.env.DASHSCOPE_API_KEY ?? "",
@@ -73,8 +81,8 @@ export const env = {
   qwenApiBase: process.env.QWEN_IMAGE_API_BASE ?? "",
   qwenApiPath: process.env.QWEN_IMAGE_PATH ?? "",
   qwenModel: process.env.QWEN_IMAGE_MODEL ?? "wanx-v1",
-  qwenTaskPollIntervalMs: Number(process.env.QWEN_TASK_POLL_INTERVAL_MS ?? "1500"),
-  qwenTaskTimeoutMs: Number(process.env.QWEN_TASK_TIMEOUT_MS ?? "180000"),
+  qwenTaskPollIntervalMs: Number(process.env.QWEN_TASK_POLL_INTERVAL_MS ?? "2000"),
+  qwenTaskTimeoutMs: Number(process.env.QWEN_TASK_TIMEOUT_MS ?? "300000"),
   cogviewApiKey: process.env.COGVIEW_API_KEY ?? "",
   cogviewApiBase: process.env.COGVIEW_IMAGE_API_BASE ?? "",
   cogviewApiPath: process.env.COGVIEW_IMAGE_PATH ?? "",
@@ -86,6 +94,11 @@ export const env = {
     process.env.SUNO_CALLBACK_URL ?? "http://localhost:3001/api/music/ai/callback",
   sunoPollIntervalMs: Number(process.env.SUNO_POLL_INTERVAL_MS ?? "2000"),
   sunoTimeoutMs: Number(process.env.SUNO_TIMEOUT_MS ?? "240000"),
+  audioConcurrency: Number(process.env.AUDIO_CONCURRENCY ?? "3"),
+  videoFps: Number(process.env.VIDEO_FPS ?? "24"),
+  minSceneDurationMs: Number(process.env.MIN_SCENE_DURATION_MS ?? "800"),
+  maxSceneDurationMs: Number(process.env.MAX_SCENE_DURATION_MS ?? "30000"),
+  charsPerSecond: Number(process.env.NARRATION_CHARS_PER_SECOND ?? "4.5"),
 };
 
 export function getQwenChatConfig(): QwenChatEnv {
@@ -185,5 +198,15 @@ export function getSunoConfig(): SunoEnv {
     sunoCallbackUrl: env.sunoCallbackUrl,
     sunoPollIntervalMs: env.sunoPollIntervalMs,
     sunoTimeoutMs: env.sunoTimeoutMs,
+  };
+}
+
+export function getVideoConfig(): VideoEnv {
+  return {
+    audioConcurrency: Math.max(1, env.audioConcurrency),
+    videoFps: Math.max(12, env.videoFps),
+    minSceneDurationMs: Math.max(300, env.minSceneDurationMs),
+    maxSceneDurationMs: Math.max(env.minSceneDurationMs, env.maxSceneDurationMs),
+    charsPerSecond: Math.max(1, env.charsPerSecond),
   };
 }

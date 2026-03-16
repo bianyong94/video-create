@@ -58,15 +58,48 @@ function sanitizePrompt(prompt: string): string {
   return `${filtered.slice(0, 200)}${safeSuffix}`.trim();
 }
 
-async function generateImageWithRetry(prompt: string): Promise<Buffer> {
+function isQwenRetriableError(error: unknown): boolean {
+  if (!(error instanceof ImageProviderError) || error.provider !== "qwen") {
+    return false;
+  }
+  return error.code === "TaskTimeout" || error.code === "Throttling" || error.code === "RateLimitExceeded";
+}
+
+async function tryGenerate(prompt: string, provider?: "qwen" | "cogview"): Promise<Buffer> {
+  const raw = await generateImage(prompt, provider);
+  return raw.buffer;
+}
+
+async function generateImageWithRetry(prompt: string, provider?: "qwen" | "cogview"): Promise<Buffer> {
   try {
-    const raw = await generateImage(prompt);
-    return raw.buffer;
+    return await tryGenerate(prompt, provider);
   } catch (error) {
     if (error instanceof ImageProviderError && error.code === "DataInspectionFailed") {
       const safePrompt = sanitizePrompt(prompt);
-      const raw = await generateImage(safePrompt);
-      return raw.buffer;
+      return await tryGenerate(safePrompt, provider);
+    }
+    if (isQwenRetriableError(error)) {
+      const simplifiedPrompt = sanitizePrompt(prompt).slice(0, 120);
+      return await tryGenerate(simplifiedPrompt, provider);
+    }
+    throw error;
+  }
+}
+
+async function generateSceneImage(prompt: string, canFallbackToCogview: boolean): Promise<Buffer> {
+  try {
+    return await generateImageWithRetry(prompt, "qwen");
+  } catch (error) {
+    if (
+      canFallbackToCogview &&
+      error instanceof ImageProviderError &&
+      error.provider === "qwen" &&
+      (error.code === "TaskTimeout" ||
+        error.code === "DataInspectionFailed" ||
+        error.code === "Throttling" ||
+        error.code === "RateLimitExceeded")
+    ) {
+      return await generateImageWithRetry(sanitizePrompt(prompt), "cogview");
     }
     throw error;
   }
@@ -77,22 +110,22 @@ export async function generateVisuals(
 ): Promise<VisualGenerateResponse> {
   const config = getImageConfig();
   const imageDir = await ensureImageDir();
+  const effectiveConcurrency =
+    config.imageProvider === "qwen"
+      ? 1
+      : Math.max(1, config.imageConcurrency);
 
   const results = await mapWithConcurrency(
     input.scenes,
-    Math.max(1, config.imageConcurrency),
-    async (scene) => {
+    effectiveConcurrency,
+    async (scene: ScriptScene) => {
       let buffer: Buffer;
       if (config.imageProvider === "qwen" && config.cogviewApiKey) {
-        try {
-          buffer = await generateImageWithRetry(scene.image_prompt);
-        } catch (error) {
-          if (error instanceof ImageProviderError && error.code === "DataInspectionFailed") {
-            buffer = (await generateImage(sanitizePrompt(scene.image_prompt), "cogview")).buffer;
-          } else {
-            throw error;
-          }
-        }
+        buffer = await generateSceneImage(scene.image_prompt, true);
+      } else if (config.imageProvider === "qwen") {
+        buffer = await generateImageWithRetry(scene.image_prompt, "qwen");
+      } else if (config.imageProvider === "cogview") {
+        buffer = await generateImageWithRetry(scene.image_prompt, "cogview");
       } else {
         buffer = await generateImageWithRetry(scene.image_prompt);
       }
