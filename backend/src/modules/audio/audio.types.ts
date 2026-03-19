@@ -7,6 +7,8 @@ export type WordTimestamp = {
 export type AudioSceneResult = {
   scene_id: number;
   narration_text: string;
+  recognized_text?: string;
+  timing_source?: "text" | "asr";
   voice?: string;
   audio_path: string;
   audio_format: string;

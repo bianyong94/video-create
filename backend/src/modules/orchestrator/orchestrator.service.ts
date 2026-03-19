@@ -14,6 +14,9 @@ export type OrchestratorInput = {
   topic?: string;
   sourceUrl?: string;
   sceneCount?: number;
+  narrationDensity?: "short" | "medium" | "long";
+  targetDurationMinutes?: number;
+  aspectRatio?: "portrait" | "landscape";
   userId: string;
   voice?: string;
   bgmStyle?: string;
@@ -28,7 +31,8 @@ type MergedScene = {
   audio_path: string;
   duration_ms: number;
   timestamps: AudioSceneResult["timestamps"];
-  image_path: string;
+  image_path?: string;
+  video_path?: string;
 };
 
 function mergeScenes(
@@ -45,6 +49,9 @@ function mergeScenes(
     if (!audioItem || !visualItem) {
       throw new Error(`Missing audio or image for scene ${scene.scene_id}`);
     }
+    if (!visualItem.image_path && !visualItem.video_path) {
+      throw new Error(`Missing visual media for scene ${scene.scene_id}`);
+    }
     return {
       scene_id: scene.scene_id,
       narration_text: scene.narration_text,
@@ -53,6 +60,7 @@ function mergeScenes(
       duration_ms: audioItem.duration_ms,
       timestamps: audioItem.timestamps,
       image_path: visualItem.image_path,
+      video_path: visualItem.video_path,
     };
   });
 }
@@ -94,6 +102,11 @@ export function resumePipeline(
     topic: inputOverride?.topic ?? previous.topic,
     sourceUrl: inputOverride?.sourceUrl ?? previous.sourceUrl,
     sceneCount: inputOverride?.sceneCount ?? previous.sceneCount,
+    narrationDensity:
+      inputOverride?.narrationDensity ?? previous.narrationDensity,
+    targetDurationMinutes:
+      inputOverride?.targetDurationMinutes ?? previous.targetDurationMinutes,
+    aspectRatio: inputOverride?.aspectRatio ?? previous.aspectRatio,
     voice: inputOverride?.voice ?? previous.voice,
     bgmStyle: inputOverride?.bgmStyle ?? previous.bgmStyle,
     bgmEnabled: inputOverride?.bgmEnabled ?? previous.bgmEnabled,
@@ -153,6 +166,9 @@ async function runPipeline(
         topic: input.topic ?? "未命名主题",
         sourceUrl: input.sourceUrl,
         sceneCount: input.sceneCount,
+        narrationDensity: input.narrationDensity,
+        targetDurationMinutes: input.targetDurationMinutes,
+        aspectRatio: input.aspectRatio,
       });
       partialResult.script = script;
       updateJob(jobId, { result: partialResult });
@@ -182,7 +198,10 @@ async function runPipeline(
     if (startStage === "script" || startStage === "audio" || startStage === "visual") {
       currentStage = "visual";
       updateJob(jobId, { stage: "visual", progress: 60, message: "正在生成画面..." });
-      visual = await generateVisuals({ scenes: script.scenes });
+      visual = await generateVisuals({
+        scenes: script.scenes,
+        aspect_ratio: input.aspectRatio,
+      });
       partialResult.visual = visual;
       updateJob(jobId, { result: partialResult });
     } else if (visual) {
@@ -204,6 +223,7 @@ async function runPipeline(
       scenes: merged.map((scene) => ({
         scene_id: scene.scene_id,
         image_path: scene.image_path,
+        video_path: scene.video_path,
         audio_path: scene.audio_path,
         duration_ms: scene.duration_ms,
         timestamps: scene.timestamps,
@@ -212,6 +232,7 @@ async function runPipeline(
       bgm_style: input.bgmStyle,
       bgm_enabled: input.bgmEnabled,
       bgm_path: input.bgmPath,
+      aspect_ratio: input.aspectRatio,
     });
     const videoUrl = buildPublicMediaUrl(video.video_path);
     const srtUrl = buildPublicMediaUrl(video.srt_path);

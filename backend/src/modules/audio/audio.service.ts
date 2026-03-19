@@ -1,12 +1,13 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { ScriptScene } from "../../utils/json";
-import { synthesizeWithDashScope } from "./dashscopeTts";
 import { recognizeWithDashScope } from "./dashscopeAsr";
+import { recognizeWithFasterWhisper } from "./fasterWhisperAsr";
 import type { AudioGenerateResponse, AudioSceneResult } from "./audio.types";
 import { probeAudioDurationMs } from "../../utils/audioProbe";
-import { getVideoConfig } from "../../config/env";
+import { env, getAudioConfig, getVideoConfig } from "../../config/env";
 import { mapWithConcurrency } from "../../utils/limit";
+import { synthesizeSpeech } from "./tts";
 
 type AudioGenerateInput = {
   scenes: ScriptScene[];
@@ -36,82 +37,87 @@ function estimateNarrationDurationMs(text: string): number {
   );
 }
 
-function createFallbackTimestamps(
-  text: string,
-  durationMs: number
-): AudioSceneResult["timestamps"] {
+function splitNarration(text: string): string[] {
   const chunks = text
     .split(/(?<=[。！？!?，,；;：:])/)
     .map((item) => item.trim())
     .filter(Boolean);
-  const units = chunks.length > 0 ? chunks : text.split("").filter(Boolean);
+  return chunks.length > 0 ? chunks : text.split("").filter(Boolean);
+}
+
+function createTextBasedTimestamps(
+  text: string,
+  durationMs: number
+): AudioSceneResult["timestamps"] {
+  const units = splitNarration(text);
   if (units.length === 0) {
     return [{ text, begin_ms: 0, end_ms: durationMs }];
   }
 
-  const slice = durationMs / units.length;
+  const weights = units.map((unit) => {
+    const contentLength = unit.replace(/[，。！？!?；;：:\s]/g, "").length;
+    const pauseBonus = /[。！？!?]/.test(unit)
+      ? 2.4
+      : /[，,；;：:]/.test(unit)
+        ? 1.4
+        : 1;
+    return Math.max(1, contentLength + pauseBonus);
+  });
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+  let cursor = 0;
   return units.map((unit, index) => {
-    const begin = Math.round(index * slice);
-    const end =
+    const ratio = weights[index] / totalWeight;
+    const segmentDuration =
       index === units.length - 1
-        ? durationMs
-        : Math.max(begin + 120, Math.round((index + 1) * slice));
+        ? durationMs - cursor
+        : Math.max(220, Math.round(durationMs * ratio));
+    const begin = cursor;
+    const end = Math.min(durationMs, begin + segmentDuration);
+    cursor = end;
     return {
       text: unit,
       begin_ms: begin,
-      end_ms: Math.min(durationMs, end),
+      end_ms: end,
     };
   });
 }
 
-function normalizeTimestamps(
-  text: string,
-  timestamps: AudioSceneResult["timestamps"],
-  durationMs: number,
-  asrDurationMs: number
-): AudioSceneResult["timestamps"] {
-  if (timestamps.length === 0) {
-    return createFallbackTimestamps(text, durationMs);
+function normalizeComparableText(text: string): string {
+  return text
+    .replace(/[，。！？!?；;：:“”"、,.]/g, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+function longestCommonSubsequenceLength(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const dp = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1] + 1
+          : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
   }
+  return dp[a.length][b.length];
+}
 
-  const sourceDuration =
-    asrDurationMs > 0
-      ? asrDurationMs
-      : timestamps[timestamps.length - 1]?.end_ms ?? durationMs;
-  const scale =
-    sourceDuration > 0 ? Math.min(4, Math.max(0.1, durationMs / sourceDuration)) : 1;
-  const normalized: AudioSceneResult["timestamps"] = [];
-  timestamps.forEach((stamp: AudioSceneResult["timestamps"][number]) => {
-    const previousEnd = normalized[normalized.length - 1]?.end_ms ?? 0;
-    const rawBegin = Math.round(stamp.begin_ms * scale);
-    const rawEnd = Math.round(stamp.end_ms * scale);
-    const begin = Math.min(durationMs, Math.max(previousEnd, rawBegin));
-    const end = Math.min(durationMs, Math.max(begin + 80, rawEnd));
-    normalized.push({
-      text: stamp.text,
-      begin_ms: begin,
-      end_ms: end,
-    });
-  });
-
-  if (
-    normalized.every(
-      (stamp: AudioSceneResult["timestamps"][number]) => stamp.begin_ms === stamp.end_ms
-    )
-  ) {
-    return createFallbackTimestamps(text, durationMs);
-  }
-
-  normalized[normalized.length - 1].end_ms = durationMs;
-  return normalized;
+function getTextSimilarity(expectedText: string, recognizedText: string): number {
+  const expected = normalizeComparableText(expectedText);
+  const recognized = normalizeComparableText(recognizedText);
+  if (!expected || !recognized) return 0;
+  const lcs = longestCommonSubsequenceLength(expected, recognized);
+  return lcs / Math.max(expected.length, recognized.length);
 }
 
 function sanitizeSceneTiming(
   text: string,
   probedDurationMs: number | null,
-  asrDurationMs: number,
-  timestamps: AudioSceneResult["timestamps"]
-): Pick<AudioSceneResult, "duration_ms" | "timestamps"> {
+  asrDurationMs: number
+): Pick<AudioSceneResult, "duration_ms" | "timestamps" | "timing_source"> {
   const config = getVideoConfig();
   const estimatedDurationMs = estimateNarrationDurationMs(text);
   const reliableProbe =
@@ -142,8 +148,57 @@ function sanitizeSceneTiming(
 
   return {
     duration_ms: durationMs,
-    timestamps: normalizeTimestamps(text, timestamps, durationMs, asrDurationMs),
+    timestamps: createTextBasedTimestamps(text, durationMs),
+    timing_source: "text",
   };
+}
+
+function shouldRetryTts(
+  text: string,
+  audioBuffer: Buffer,
+  durationMs: number,
+  recognizedText: string
+): boolean {
+  const estimatedDurationMs = estimateNarrationDurationMs(text);
+  if (audioBuffer.byteLength < 2048) {
+    return true;
+  }
+  if (durationMs < Math.max(700, estimatedDurationMs * 0.45)) {
+    return true;
+  }
+  const similarity = getTextSimilarity(text, recognizedText);
+  return similarity > 0 && similarity < 0.45 && durationMs < estimatedDurationMs * 0.8;
+}
+
+async function recognizeWithFallback(
+  audioPath: string
+): Promise<{
+  timestamps: AudioSceneResult["timestamps"];
+  durationMs: number;
+  recognizedText: string;
+}> {
+  const audioConfig = getAudioConfig();
+
+  if (audioConfig.asrProvider === "faster_whisper") {
+    try {
+      return await recognizeWithFasterWhisper(audioPath);
+    } catch (error) {
+      if (env.dashscopeApiKey) {
+        return recognizeWithDashScope(audioPath);
+      }
+      throw error;
+    }
+  }
+
+  try {
+    return await recognizeWithDashScope(audioPath);
+  } catch (error) {
+    try {
+      return await recognizeWithFasterWhisper(audioPath);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function generateAudioAndTimestamps(
@@ -156,44 +211,55 @@ export async function generateAudioAndTimestamps(
     input.scenes,
     config.audioConcurrency,
     async (scene: ScriptScene) => {
-      let tts = null;
-      let voiceUsed = input.voice;
-      try {
-        tts = await synthesizeWithDashScope(scene.narration_text, input.voice);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "";
-        if (input.voice && message.includes("418")) {
-          tts = await synthesizeWithDashScope(scene.narration_text, undefined);
-          voiceUsed = undefined;
-        } else {
-          throw error;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const tts = await synthesizeSpeech(scene.narration_text, input.voice);
+        const filename = `scene-${scene.scene_id}-${Date.now()}-${attempt}.${tts.format}`;
+        const audioPath = path.join(audioDir, filename);
+        await fs.writeFile(audioPath, tts.audioBuffer);
+
+        const [asr, probedDuration] = await Promise.all([
+          recognizeWithFallback(audioPath).catch(() => ({
+            timestamps: [] as AudioSceneResult["timestamps"],
+            durationMs: 0,
+            recognizedText: "",
+          })),
+          probeAudioDurationMs(audioPath).catch(() => null),
+        ]);
+        const recognizedText =
+          asr.recognizedText || asr.timestamps.map((stamp) => stamp.text).join("");
+        const timing = sanitizeSceneTiming(
+          scene.narration_text,
+          probedDuration,
+          asr.durationMs
+        );
+
+        if (
+          attempt < 2 &&
+          shouldRetryTts(
+            scene.narration_text,
+            tts.audioBuffer,
+            timing.duration_ms,
+            recognizedText
+          )
+        ) {
+          continue;
         }
+
+        return {
+          scene_id: scene.scene_id,
+          narration_text: scene.narration_text,
+          recognized_text: recognizedText || undefined,
+          timing_source: timing.timing_source,
+          voice: tts.voiceUsed,
+          audio_path: audioPath,
+          audio_format: tts.format,
+          sample_rate: tts.sampleRate,
+          duration_ms: timing.duration_ms,
+          timestamps: timing.timestamps,
+        };
       }
-      const filename = `scene-${scene.scene_id}-${Date.now()}.${tts.format}`;
-      const audioPath = path.join(audioDir, filename);
-      await fs.writeFile(audioPath, tts.audioBuffer);
 
-      const [asr, probedDuration] = await Promise.all([
-        recognizeWithDashScope(audioPath),
-        probeAudioDurationMs(audioPath).catch(() => null),
-      ]);
-      const timing = sanitizeSceneTiming(
-        scene.narration_text,
-        probedDuration,
-        asr.durationMs,
-        asr.timestamps
-      );
-
-      return {
-        scene_id: scene.scene_id,
-        narration_text: scene.narration_text,
-        voice: voiceUsed,
-        audio_path: audioPath,
-        audio_format: tts.format,
-        sample_rate: tts.sampleRate,
-        duration_ms: timing.duration_ms,
-        timestamps: timing.timestamps,
-      };
+      throw new Error(`Failed to generate valid audio for scene ${scene.scene_id}.`);
     }
   );
 

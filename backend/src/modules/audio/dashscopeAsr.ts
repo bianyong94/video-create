@@ -7,6 +7,7 @@ import type { WordTimestamp } from "./audio.types";
 type AsrResult = {
   timestamps: WordTimestamp[];
   durationMs: number;
+  recognizedText: string;
 };
 
 type AsrMessage = {
@@ -40,6 +41,7 @@ export async function recognizeWithDashScope(
 
   return new Promise<AsrResult>((resolve, reject) => {
     const timestamps: WordTimestamp[] = [];
+    const recognizedParts: string[] = [];
     let durationMs = 0;
     const ws = new WebSocket(config.dashscopeWsUrl, {
       headers: {
@@ -121,6 +123,9 @@ export async function recognizeWithDashScope(
       if (event === "result-generated") {
         const sentence = message.payload?.output?.sentence;
         const sentenceEnd = message.payload?.output?.sentence_end;
+        if (sentenceEnd && typeof sentence?.text === "string" && sentence.text.trim()) {
+          recognizedParts.push(sentence.text.trim());
+        }
         if (sentenceEnd && sentence?.words) {
           sentence.words.forEach((word) => {
             if (
@@ -142,7 +147,11 @@ export async function recognizeWithDashScope(
 
       if (event === "task-finished") {
         cleanup();
-        resolve({ timestamps, durationMs });
+        resolve({
+          timestamps,
+          durationMs,
+          recognizedText: recognizedParts.join(""),
+        });
         return;
       }
 

@@ -6,6 +6,8 @@ import musicRouter from "../modules/music/music.router";
 import visualRouter from "../modules/visual/visual.router";
 import videoRouter from "../modules/video/video.router";
 import orchestratorRouter from "../modules/orchestrator/orchestrator.router";
+import baiduSearchRouter from "../modules/search/baiduSearch.router";
+import videoCandidatesRouter from "../modules/search/videoCandidates.router";
 import billingRouter from "./billing.router";
 
 const router = Router();
@@ -17,6 +19,8 @@ router.use("/music", musicRouter);
 router.use("/visual", visualRouter);
 router.use("/video", videoRouter);
 router.use("/orchestrator", orchestratorRouter);
+router.use("/search", baiduSearchRouter);
+router.use("/search", videoCandidatesRouter);
 router.use("/billing", billingRouter);
 
 export default router;

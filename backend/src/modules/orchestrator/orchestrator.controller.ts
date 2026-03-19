@@ -1,9 +1,21 @@
 import type { Request, Response } from "express";
 import { resumePipeline, startPipeline, startPipelineFromPartial } from "./orchestrator.service";
 import { getJob } from "./job.store";
+import { normalizeAspectRatio } from "../../utils/aspectRatio";
 
 export async function startPipelineHandler(req: Request, res: Response) {
-  const { topic, sourceUrl, sceneCount, voice, bgmStyle, bgmEnabled, bgmPath } = req.body ?? {};
+  const {
+    topic,
+    sourceUrl,
+    sceneCount,
+    narrationDensity,
+    targetDurationMinutes,
+    aspect_ratio,
+    voice,
+    bgmStyle,
+    bgmEnabled,
+    bgmPath,
+  } = req.body ?? {};
   const userId = req.header("x-user-id");
 
   if (!userId) {
@@ -18,6 +30,17 @@ export async function startPipelineHandler(req: Request, res: Response) {
     topic: typeof topic === "string" ? topic : undefined,
     sourceUrl: typeof sourceUrl === "string" ? sourceUrl : undefined,
     sceneCount: typeof sceneCount === "number" ? sceneCount : undefined,
+    narrationDensity:
+      narrationDensity === "short" ||
+      narrationDensity === "medium" ||
+      narrationDensity === "long"
+        ? narrationDensity
+        : undefined,
+    targetDurationMinutes:
+      typeof targetDurationMinutes === "number" ? targetDurationMinutes : undefined,
+    aspectRatio: normalizeAspectRatio(
+      typeof aspect_ratio === "string" ? aspect_ratio : undefined
+    ),
     userId,
     voice: typeof voice === "string" ? voice : undefined,
     bgmStyle: typeof bgmStyle === "string" ? bgmStyle : undefined,
@@ -49,6 +72,9 @@ export async function retryPipelineHandler(req: Request, res: Response) {
     topic,
     sourceUrl,
     sceneCount,
+    narrationDensity,
+    targetDurationMinutes,
+    aspect_ratio,
     failedStage,
     partial,
     voice,
@@ -70,6 +96,17 @@ export async function retryPipelineHandler(req: Request, res: Response) {
       topic: typeof topic === "string" ? topic : undefined,
       sourceUrl: typeof sourceUrl === "string" ? sourceUrl : undefined,
       sceneCount: typeof sceneCount === "number" ? sceneCount : undefined,
+      narrationDensity:
+        narrationDensity === "short" ||
+        narrationDensity === "medium" ||
+        narrationDensity === "long"
+          ? narrationDensity
+          : undefined,
+      targetDurationMinutes:
+        typeof targetDurationMinutes === "number" ? targetDurationMinutes : undefined,
+      aspectRatio: normalizeAspectRatio(
+        typeof aspect_ratio === "string" ? aspect_ratio : undefined
+      ),
       voice: typeof voice === "string" ? voice : undefined,
       bgmStyle: typeof bgmStyle === "string" ? bgmStyle : undefined,
       bgmEnabled: typeof bgmEnabled === "boolean" ? bgmEnabled : undefined,
@@ -86,6 +123,19 @@ export async function retryPipelineHandler(req: Request, res: Response) {
             topic: typeof topic === "string" ? topic : undefined,
             sourceUrl: typeof sourceUrl === "string" ? sourceUrl : undefined,
             sceneCount: typeof sceneCount === "number" ? sceneCount : undefined,
+            narrationDensity:
+              narrationDensity === "short" ||
+              narrationDensity === "medium" ||
+              narrationDensity === "long"
+                ? narrationDensity
+                : undefined,
+            targetDurationMinutes:
+              typeof targetDurationMinutes === "number"
+                ? targetDurationMinutes
+                : undefined,
+            aspectRatio: normalizeAspectRatio(
+              typeof aspect_ratio === "string" ? aspect_ratio : undefined
+            ),
             voice: typeof voice === "string" ? voice : undefined,
             bgmStyle: typeof bgmStyle === "string" ? bgmStyle : undefined,
             bgmEnabled: typeof bgmEnabled === "boolean" ? bgmEnabled : undefined,

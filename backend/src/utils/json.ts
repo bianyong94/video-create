@@ -2,6 +2,7 @@ export type ScriptScene = {
   scene_id: number;
   narration_text: string;
   image_prompt: string;
+  stock_query?: string;
 };
 
 export type ScriptPayload = {
@@ -73,7 +74,10 @@ function toNumber(value: unknown): number | null {
   return null;
 }
 
-export function normalizeScriptPayload(raw: unknown): ScriptPayload {
+export function normalizeScriptPayload(
+  raw: unknown,
+  expectedSceneCount?: number
+): ScriptPayload {
   const scenesRaw = Array.isArray(raw)
     ? raw
     : typeof raw === "object" && raw !== null && "scenes" in raw
@@ -91,6 +95,7 @@ export function normalizeScriptPayload(raw: unknown): ScriptPayload {
     const sceneId = toNumber((scene as { scene_id?: unknown }).scene_id);
     const narrationText = (scene as { narration_text?: unknown }).narration_text;
     const imagePrompt = (scene as { image_prompt?: unknown }).image_prompt;
+    const stockQuery = (scene as { stock_query?: unknown }).stock_query;
 
     if (sceneId === null) {
       throw new Error(`Scene ${index + 1} missing scene_id.`);
@@ -106,12 +111,35 @@ export function normalizeScriptPayload(raw: unknown): ScriptPayload {
       scene_id: sceneId,
       narration_text: narrationText.trim(),
       image_prompt: imagePrompt.trim(),
+      stock_query:
+        typeof stockQuery === "string" && stockQuery.trim() !== ""
+          ? stockQuery.trim()
+          : undefined,
     };
   });
 
   if (scenes.length === 0) {
     throw new Error("Scenes array is empty.");
   }
+
+  if (
+    typeof expectedSceneCount === "number" &&
+    Number.isFinite(expectedSceneCount) &&
+    scenes.length !== expectedSceneCount
+  ) {
+    throw new Error(
+      `Expected exactly ${expectedSceneCount} scenes, but got ${scenes.length}.`
+    );
+  }
+
+  scenes.forEach((scene, index) => {
+    const expectedSceneId = index + 1;
+    if (scene.scene_id !== expectedSceneId) {
+      throw new Error(
+        `Scene ${index + 1} must use scene_id ${expectedSceneId}, but got ${scene.scene_id}.`
+      );
+    }
+  });
 
   return { scenes };
 }

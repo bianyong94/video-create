@@ -1,11 +1,12 @@
 import { Router } from "express";
+import { env } from "../../config/env";
 import { getDashScopeVoices } from "./voices";
 import { generateVoicePreview } from "./voicePreview.service";
 
 const router = Router();
 
 router.get("/list", (_req, res) => {
-  res.status(200).json({ voices: getDashScopeVoices() });
+  res.status(200).json({ provider: env.ttsProvider, voices: getDashScopeVoices() });
 });
 
 router.post("/preview", async (req, res) => {

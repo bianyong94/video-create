@@ -1,8 +1,16 @@
 import type { Request, Response } from "express";
 import { generateScript } from "./script.service";
+import { normalizeAspectRatio } from "../../utils/aspectRatio";
 
 export async function generateScriptHandler(req: Request, res: Response) {
-  const { topic, sourceUrl, sceneCount } = req.body ?? {};
+  const {
+    topic,
+    sourceUrl,
+    sceneCount,
+    narrationDensity,
+    targetDurationMinutes,
+    aspect_ratio,
+  } = req.body ?? {};
 
   if ((!topic || typeof topic !== "string") && (!sourceUrl || typeof sourceUrl !== "string")) {
     return res.status(400).json({
@@ -15,6 +23,19 @@ export async function generateScriptHandler(req: Request, res: Response) {
       topic: topic ?? "未命名主题",
       sourceUrl,
       sceneCount: typeof sceneCount === "number" ? sceneCount : undefined,
+      narrationDensity:
+        narrationDensity === "short" ||
+        narrationDensity === "medium" ||
+        narrationDensity === "long"
+          ? narrationDensity
+          : undefined,
+      targetDurationMinutes:
+        typeof targetDurationMinutes === "number"
+          ? targetDurationMinutes
+          : undefined,
+      aspectRatio: normalizeAspectRatio(
+        typeof aspect_ratio === "string" ? aspect_ratio : undefined
+      ),
     });
     return res.status(200).json(payload);
   } catch (error) {

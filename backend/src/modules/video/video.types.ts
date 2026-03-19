@@ -1,8 +1,10 @@
 import type { WordTimestamp } from "../audio/audio.types";
+import type { AspectRatio } from "../visual/visual.types";
 
 export type VideoSceneInput = {
   scene_id: number;
-  image_path: string;
+  image_path?: string;
+  video_path?: string;
   audio_path: string;
   duration_ms: number;
   timestamps: WordTimestamp[];
@@ -15,6 +17,7 @@ export type VideoAssembleInput = {
   bgm_style?: string;
   bgm_path?: string;
   bgm_volume?: number;
+  aspect_ratio?: AspectRatio;
 };
 
 export type VideoAssembleResponse = {

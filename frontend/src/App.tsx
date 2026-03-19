@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3001/api";
 
@@ -6,6 +6,8 @@ type ScriptScene = {
   scene_id: number;
   narration_text: string;
   image_prompt: string;
+  stock_query?: string;
+  transition_text?: string;
 };
 
 type ScriptResponse = {
@@ -25,16 +27,92 @@ type AudioResponse = {
   scenes: AudioScene[];
 };
 
+type VisualCandidate = {
+  id: string;
+  media_type: "image" | "video";
+  media_url: string;
+  preview_url?: string;
+  preview_image_url?: string;
+  preview_path?: string;
+  source_provider: string;
+  source_url?: string;
+  source_author?: string;
+  source_query?: string;
+  score: number;
+  title?: string;
+  description?: string;
+  match_score?: number;
+  match_passed?: boolean;
+  match_reasons?: string[];
+};
+
 type VisualScene = {
   scene_id: number;
   image_prompt: string;
-  image_path: string;
+  media_type?: "image" | "video";
+  image_path?: string;
+  video_path?: string;
   width: number;
   height: number;
+  selected_candidate_id?: string;
+  candidates?: VisualCandidate[];
+  scene_category?: string;
+  source_provider?: string;
+  source_url?: string;
+  source_author?: string;
+  source_query?: string;
+  selection_score?: number;
 };
 
 type VisualResponse = {
   scenes: VisualScene[];
+};
+
+type BaiduSearchResult = {
+  title?: string;
+  url?: string;
+  snippet?: string;
+  site?: string;
+  source?: string;
+  page_time?: string;
+  media_kind?: "video" | "web";
+  is_video_like?: boolean;
+};
+
+type BaiduSearchResponse = {
+  query: string;
+  count: number;
+  results: BaiduSearchResult[];
+};
+
+type VideoCandidateResult = {
+  id: string;
+  media_type: "video" | "page";
+  media_url: string;
+  preview_url?: string;
+  preview_embed_url?: string;
+  source_provider: string;
+  source_url?: string;
+  source_author?: string;
+  source_query?: string;
+  score: number;
+  match_score?: number;
+  match_passed?: boolean;
+  match_reasons?: string[];
+  scene_category?: string;
+  duration_sec?: number;
+  title?: string;
+  description?: string;
+  page_url?: string;
+  page_snippet?: string;
+  page_site?: string;
+  preview_image_url?: string;
+};
+
+type VideoCandidateResponse = {
+  query: string;
+  count: number;
+  results: VideoCandidateResult[];
 };
 
 type VideoResponse = {
@@ -44,15 +122,6 @@ type VideoResponse = {
   video_url?: string;
   srt_url?: string;
   subtitles_burned?: boolean;
-};
-
-type JobStatus = {
-  stage: string;
-  progress: number;
-  message: string;
-  result?: unknown;
-  error?: string;
-  failedStage?: "script" | "audio" | "visual" | "video";
 };
 
 async function postJson<T>(path: string, body: unknown, headers?: HeadersInit) {
@@ -80,93 +149,92 @@ async function getJson<T>(path: string) {
   return data as T;
 }
 
-function safeParseJson<T>(value: string): T | null {
+function formatMs(ms: number) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(sec / 60)
+    .toString()
+    .padStart(2, "0");
+  const s = (sec % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function safeHostname(url?: string): string {
+  if (!url) return "example.com";
   try {
-    return JSON.parse(value) as T;
+    return new URL(url).hostname;
   } catch {
-    return null;
+    return "example.com";
   }
 }
 
-function stringifyPretty(value: unknown): string {
-  return JSON.stringify(value, null, 2);
+function isInlinePlayableMediaUrl(url?: string): boolean {
+  if (!url) return false;
+  return (
+    url.startsWith("data:") ||
+    url.startsWith("blob:") ||
+    url.startsWith("/") ||
+    url.startsWith("http://localhost") ||
+    url.startsWith("https://localhost") ||
+    url.startsWith("http://127.0.0.1") ||
+    url.startsWith("https://127.0.0.1")
+  );
 }
 
+function canPreviewAsVideo(url?: string): boolean {
+  if (!url) return false;
+  return (
+    isInlinePlayableMediaUrl(url) &&
+    !/\.(jpg|jpeg|png|webp|gif|avif)$/i.test(url)
+  );
+}
+
+type StepKey = "script" | "audio" | "visual" | "select" | "video";
+
 export default function App() {
-  const [topic, setTopic] = useState("AI 自动视频工厂");
+  const [topic, setTopic] = useState("古代中国版图变化");
   const [sourceUrl, setSourceUrl] = useState("");
-  const [sceneCount, setSceneCount] = useState(6);
+  const [sceneCount, setSceneCount] = useState(8);
+  const [targetDurationMinutes, setTargetDurationMinutes] = useState(2);
+  const [narrationDensity, setNarrationDensity] = useState<
+    "short" | "medium" | "long"
+  >("medium");
+  const [aspectRatio, setAspectRatio] = useState<"portrait" | "landscape">(
+    "portrait"
+  );
 
-  const [scriptResult, setScriptResult] = useState<ScriptResponse | null>(null);
-  const [scriptText, setScriptText] = useState("");
-  const [audioResult, setAudioResult] = useState<AudioResponse | null>(null);
-  const [audioText, setAudioText] = useState("");
-  const [visualResult, setVisualResult] = useState<VisualResponse | null>(null);
-  const [visualText, setVisualText] = useState("");
-  const [videoResult, setVideoResult] = useState<VideoResponse | null>(null);
-  const [videoText, setVideoText] = useState("");
-
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
-
-  const [loading, setLoading] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [voices, setVoices] = useState<string[]>([]);
   const [selectedVoice, setSelectedVoice] = useState("");
-  const [voiceSampleText, setVoiceSampleText] = useState("大家好，这是一段人声试听。");
+  const [voiceSampleText, setVoiceSampleText] = useState(
+    "大家好，这是一段人声试听。"
+  );
   const [voicePreviewUrl, setVoicePreviewUrl] = useState<string | null>(null);
+
+  const [videoQuery, setVideoQuery] = useState(topic);
+  const [videoCount, setVideoCount] = useState(8);
+  const [videoResults, setVideoResults] = useState<VideoCandidateResult[]>([]);
+  const [videoSearching, setVideoSearching] = useState(false);
+
   const [bgmStyles, setBgmStyles] = useState<string[]>([]);
   const [bgmStyle, setBgmStyle] = useState("default");
   const [bgmEnabled, setBgmEnabled] = useState(true);
-  const [bgmPreviewUrl, setBgmPreviewUrl] = useState<string | null>(null);
   const [bgmAiPrompt, setBgmAiPrompt] = useState("轻快、现代、科技感背景音乐");
-  const [bgmAiStatus, setBgmAiStatus] = useState("");
+  const [bgmPreviewUrl, setBgmPreviewUrl] = useState<string | null>(null);
   const [bgmPath, setBgmPath] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!jobId) return;
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
-        const status = await getJson<JobStatus>(`/orchestrator/status/${jobId}`);
-        setJobStatus(status);
-        if (status.result) {
-          const result = status.result as {
-            script?: ScriptResponse;
-            audio?: AudioResponse;
-            visual?: VisualResponse;
-            video?: VideoResponse;
-          };
-          if (result.script) {
-            setScriptResult(result.script);
-            setScriptText(stringifyPretty(result.script));
-          }
-          if (result.audio) {
-            setAudioResult(result.audio);
-            setAudioText(stringifyPretty(result.audio));
-          }
-          if (result.visual) {
-            setVisualResult(result.visual);
-            setVisualText(stringifyPretty(result.visual));
-          }
-          if (result.video) {
-            setVideoResult(result.video);
-            setVideoText(stringifyPretty(result.video));
-          }
-        }
-        if (status.stage === "completed" || status.stage === "failed") {
-          if (timer) window.clearInterval(timer);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "查询失败");
-      }
-    };
-    poll();
-    timer = window.setInterval(poll, 2000);
-    return () => {
-      if (timer) window.clearInterval(timer);
-    };
-  }, [jobId]);
+  const [scriptResult, setScriptResult] = useState<ScriptResponse | null>(null);
+  const [audioResult, setAudioResult] = useState<AudioResponse | null>(null);
+  const [visualResult, setVisualResult] = useState<VisualResponse | null>(null);
+  const [videoResult, setVideoResult] = useState<VideoResponse | null>(null);
+
+  const [selectedByScene, setSelectedByScene] = useState<Record<number, string>>(
+    {}
+  );
+  const [selectionDirty, setSelectionDirty] = useState(false);
+
+  const [loading, setLoading] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const didMountRef = useRef(false);
 
   useEffect(() => {
     const load = async () => {
@@ -179,6 +247,7 @@ export default function App() {
       } catch {
         setVoices([]);
       }
+
       try {
         const musicResp = await getJson<{ styles: string[] }>("/music/styles");
         setBgmStyles(musicResp.styles);
@@ -192,179 +261,68 @@ export default function App() {
     load();
   }, []);
 
-  const mergedVideoInput = useMemo(() => {
-    if (!scriptResult || !audioResult || !visualResult) return null;
-    const audioMap = new Map(audioResult.scenes.map((s) => [s.scene_id, s]));
-    const visualMap = new Map(visualResult.scenes.map((s) => [s.scene_id, s]));
-    const scenes = scriptResult.scenes.map((scene) => {
-      const audio = audioMap.get(scene.scene_id);
-      const visual = visualMap.get(scene.scene_id);
-      return {
-        scene_id: scene.scene_id,
-        image_path: visual?.image_path ?? "",
-        audio_path: audio?.audio_path ?? "",
-        duration_ms: audio?.duration_ms ?? 0,
-        timestamps: audio?.timestamps ?? [],
-      };
-    });
-    return {
-      scenes,
-      bgm_style: bgmStyle,
-      bgm_enabled: bgmEnabled,
-      bgm_path: bgmPath ?? undefined,
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    setVideoResults([]);
+    setVisualResult(null);
+    setVideoResult(null);
+    setSelectedByScene({});
+    setSelectionDirty(false);
+    setHint("画幅已切换，请重新生成候选素材和成片。");
+  }, [aspectRatio]);
+
+  const stepState = useMemo(() => {
+    const states: Record<StepKey, "done" | "current" | "waiting"> = {
+      script: "waiting",
+      audio: "waiting",
+      visual: "waiting",
+      select: "waiting",
+      video: "waiting",
     };
-  }, [scriptResult, audioResult, visualResult, bgmStyle, bgmEnabled, bgmPath]);
 
-  async function handleScript() {
-    setLoading("script");
-    setError(null);
-    try {
-      const result = await postJson<ScriptResponse>("/script/generate", {
-        topic,
-        sourceUrl: sourceUrl || undefined,
-        sceneCount,
-      });
-      setScriptResult(result);
-      setScriptText(stringifyPretty(result));
-      setAudioText(stringifyPretty(result.scenes));
-      setVisualText(stringifyPretty(result.scenes));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "生成失败");
-    } finally {
-      setLoading(null);
+    if (scriptResult) states.script = "done";
+    if (audioResult) states.audio = "done";
+    if (visualResult) states.visual = "done";
+    if (
+      visualResult &&
+      visualResult.scenes.every((scene) => selectedByScene[scene.scene_id])
+    ) {
+      states.select = selectionDirty ? "current" : "done";
     }
-  }
+    if (videoResult) states.video = "done";
 
-  async function handleAudio() {
-    setLoading("audio");
-    setError(null);
-    const scenes = safeParseJson<ScriptScene[]>(audioText);
-    if (!scenes) {
-      setError("音频输入不是合法 JSON 数组");
-      setLoading(null);
-      return;
-    }
-    try {
-      const result = await postJson<AudioResponse>("/audio/generate", {
-        scenes,
-        voice: selectedVoice || undefined,
-      });
-      setAudioResult(result);
-      setAudioText(stringifyPretty(result));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "生成失败");
-    } finally {
-      setLoading(null);
-    }
-  }
+    if (!scriptResult) states.script = "current";
+    else if (!audioResult) states.audio = "current";
+    else if (!visualResult) states.visual = "current";
+    else if (selectionDirty) states.select = "current";
+    else if (!videoResult) states.video = "current";
 
-  async function handleVisual() {
-    setLoading("visual");
-    setError(null);
-    const scenes = safeParseJson<ScriptScene[]>(visualText);
-    if (!scenes) {
-      setError("画面输入不是合法 JSON 数组");
-      setLoading(null);
-      return;
-    }
-    try {
-      const result = await postJson<VisualResponse>("/visual/generate", { scenes });
-      setVisualResult(result);
-      setVisualText(stringifyPretty(result));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "生成失败");
-    } finally {
-      setLoading(null);
-    }
-  }
+    return states;
+  }, [audioResult, scriptResult, selectionDirty, selectedByScene, videoResult, visualResult]);
 
-  async function handleVideo() {
-    setLoading("video");
-    setError(null);
-    const payload = safeParseJson<{ scenes: Array<Record<string, unknown>> }>(
-      videoText
-    );
-    if (!payload) {
-      setError("视频输入不是合法 JSON");
-      setLoading(null);
-      return;
-    }
-    try {
-      const result = await postJson<VideoResponse>("/video/assemble", {
-        ...payload,
-        bgm_style: bgmStyle,
-        bgm_enabled: bgmEnabled,
-        bgm_path: bgmPath ?? undefined,
-      });
-      setVideoResult(result);
-      setVideoText(stringifyPretty(result));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "生成失败");
-    } finally {
-      setLoading(null);
-    }
-  }
+  const candidateCompletion = useMemo(() => {
+    if (!visualResult) return 0;
+    const total = visualResult.scenes.length;
+    if (!total) return 0;
+    const selected = visualResult.scenes.filter(
+      (scene) => selectedByScene[scene.scene_id]
+    ).length;
+    return Math.round((selected / total) * 100);
+  }, [selectedByScene, visualResult]);
 
-  async function handlePipeline() {
-    setLoading("pipeline");
-    setError(null);
-    try {
-      const result = await postJson<{ jobId: string }>(
-        "/orchestrator/run",
-        {
-          topic,
-          sourceUrl: sourceUrl || undefined,
-          sceneCount,
-          voice: selectedVoice || undefined,
-          bgmStyle,
-          bgmEnabled,
-          bgmPath: bgmPath ?? undefined,
-        },
-        { "x-user-id": "demo-user" }
-      );
-      setJobId(result.jobId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "执行失败");
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function handleRetry() {
-    if (!jobId) return;
-    setLoading("pipeline");
-    setError(null);
-    try {
-      const partial = {
-        script: scriptResult ?? undefined,
-        audio: audioResult ?? undefined,
-        visual: visualResult ?? undefined,
-      };
-      const result = await postJson<{ jobId: string }>(
-        `/orchestrator/retry/${jobId}`,
-        {
-          topic,
-          sourceUrl: sourceUrl || undefined,
-          sceneCount,
-          failedStage: jobStatus?.failedStage ?? "script",
-          partial,
-          voice: selectedVoice || undefined,
-          bgmStyle,
-          bgmEnabled,
-          bgmPath: bgmPath ?? undefined,
-        },
-        { "x-user-id": "demo-user" }
-      );
-      setJobId(result.jobId);
-      setJobStatus(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "重试失败");
-    } finally {
-      setLoading(null);
-    }
-  }
+  const aspectRatioValue = aspectRatio === "landscape" ? "16 / 9" : "9 / 16";
+  const studioStyle = useMemo(
+    () =>
+      ({ ["--candidate-aspect-ratio"]: aspectRatioValue } as CSSProperties),
+    [aspectRatioValue]
+  );
 
   async function handleVoicePreview() {
+    setLoading("voice");
+    setError(null);
     try {
       const result = await postJson<{ audio_url?: string }>("/voice/preview", {
         voice: selectedVoice || undefined,
@@ -373,29 +331,59 @@ export default function App() {
       setVoicePreviewUrl(result.audio_url ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "试听失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleVideoSearch(queryOverride?: string) {
+    const query = (queryOverride ?? videoQuery).trim();
+    if (!query) {
+      setError("请先输入视频检索关键词。");
+      return;
+    }
+
+    setVideoSearching(true);
+    setError(null);
+    setHint(null);
+    try {
+      const result = await postJson<VideoCandidateResponse>("/search/video", {
+        query,
+        count: videoCount,
+        aspect_ratio: aspectRatio,
+      });
+      setVideoResults(result.results ?? []);
+      setHint(`视频检索完成，返回 ${result.count} 条候选。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "视频检索失败");
+    } finally {
+      setVideoSearching(false);
     }
   }
 
   async function handlePreviewBgm() {
     if (!bgmEnabled) return;
+    setLoading("bgm");
+    setError(null);
     try {
       const result = await postJson<{ bgm_url?: string }>("/music/generate", {
         style: bgmStyle,
       });
       setBgmPreviewUrl(result.bgm_url ?? null);
       setBgmPath(null);
-      setBgmAiStatus("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "获取背景音乐失败");
+      setError(err instanceof Error ? err.message : "背景音乐试听失败");
+    } finally {
+      setLoading(null);
     }
   }
 
-  async function handleGenerateAIMusic() {
+  async function handleGenerateAiMusic() {
     if (!bgmAiPrompt.trim()) {
-      setError("请填写背景音乐提示词");
+      setError("请先填写背景音乐提示词。");
       return;
     }
-    setBgmAiStatus("生成中...");
+    setLoading("bgm-ai");
     setError(null);
     try {
       const result = await postJson<{ bgm_url?: string; bgm_path?: string }>(
@@ -407,320 +395,792 @@ export default function App() {
           instrumental: true,
         }
       );
-      setBgmAiStatus("已生成");
       setBgmPreviewUrl(result.bgm_url ?? null);
       setBgmPath(result.bgm_path ?? null);
       setBgmEnabled(true);
     } catch (err) {
-      setBgmAiStatus("生成失败");
-      setError(err instanceof Error ? err.message : "生成失败");
+      setError(err instanceof Error ? err.message : "生成 AI 背景音乐失败");
+    } finally {
+      setLoading(null);
     }
   }
 
+  async function handleScript() {
+    setLoading("script");
+    setError(null);
+    setHint(null);
+    try {
+      const result = await postJson<ScriptResponse>("/script/generate", {
+        topic,
+        sourceUrl: sourceUrl || undefined,
+        sceneCount,
+        narrationDensity,
+        targetDurationMinutes,
+        aspect_ratio: aspectRatio,
+      });
+      setScriptResult(result);
+      setAudioResult(null);
+      setVisualResult(null);
+      setVideoResult(null);
+      setSelectedByScene({});
+      setSelectionDirty(false);
+      setHint("脚本已生成，下一步可以生成配音。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "脚本生成失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleAudio() {
+    if (!scriptResult) {
+      setError("请先生成脚本。");
+      return;
+    }
+    setLoading("audio");
+    setError(null);
+    setHint(null);
+    try {
+      const result = await postJson<AudioResponse>("/audio/generate", {
+        scenes: scriptResult.scenes,
+        voice: selectedVoice || undefined,
+      });
+      setAudioResult(result);
+      setVideoResult(null);
+      setHint("配音完成，下一步生成候选素材。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "配音生成失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleVisualCandidates() {
+    if (!scriptResult) {
+      setError("请先生成脚本。");
+      return;
+    }
+    setLoading("visual");
+    setError(null);
+    setHint(null);
+    try {
+      const result = await postJson<VisualResponse>("/visual/generate", {
+        scenes: scriptResult.scenes,
+        aspect_ratio: aspectRatio,
+      });
+      const nextSelection: Record<number, string> = {};
+      result.scenes.forEach((scene) => {
+        const selected =
+          scene.selected_candidate_id ?? scene.candidates?.[0]?.id ?? "";
+        if (selected) {
+          nextSelection[scene.scene_id] = selected;
+        }
+      });
+      setVisualResult(result);
+      setSelectedByScene(nextSelection);
+      setSelectionDirty(false);
+      setVideoResult(null);
+      setHint("候选素材已生成，请逐镜头选择你满意的画面。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "候选素材生成失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  function handleSelectCandidate(sceneId: number, candidateId: string) {
+    setSelectedByScene((prev) => ({ ...prev, [sceneId]: candidateId }));
+    setSelectionDirty(true);
+  }
+
+  function handleAutoPickVideo() {
+    if (!visualResult) return;
+    const nextSelection: Record<number, string> = {};
+    visualResult.scenes.forEach((scene) => {
+      const videoCandidate = scene.candidates?.find(
+        (candidate) => candidate.media_type === "video"
+      );
+      const first = scene.candidates?.[0];
+      const selectedId = videoCandidate?.id ?? first?.id;
+      if (selectedId) {
+        nextSelection[scene.scene_id] = selectedId;
+      }
+    });
+    setSelectedByScene(nextSelection);
+    setSelectionDirty(true);
+    setHint("已自动优先选择视频素材，你可以继续手动微调。");
+  }
+
+  async function applySelections(silent = false): Promise<VisualResponse | null> {
+    if (!scriptResult || !visualResult) {
+      if (!silent) setError("请先生成候选素材。");
+      return null;
+    }
+    const selections = visualResult.scenes
+      .map((scene) => ({
+        scene_id: scene.scene_id,
+        candidate_id: selectedByScene[scene.scene_id],
+      }))
+      .filter((item) => Boolean(item.candidate_id));
+
+    if (selections.length !== visualResult.scenes.length) {
+      if (!silent) setError("还有镜头未选择素材，请先完成选择。");
+      return null;
+    }
+
+    setLoading("apply");
+    setError(null);
+    if (!silent) setHint(null);
+    try {
+      const result = await postJson<VisualResponse>("/visual/generate", {
+        scenes: scriptResult.scenes,
+        selections,
+        aspect_ratio: aspectRatio,
+      });
+      const nextSelection: Record<number, string> = {};
+      result.scenes.forEach((scene) => {
+        const selected =
+          scene.selected_candidate_id ?? selectedByScene[scene.scene_id];
+        if (selected) nextSelection[scene.scene_id] = selected;
+      });
+      setVisualResult(result);
+      setSelectedByScene(nextSelection);
+      setSelectionDirty(false);
+      if (!silent) setHint("已应用镜头选择，素材已锁定。");
+      return result;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "应用选择失败");
+      return null;
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleAssembleVideo() {
+    if (!scriptResult || !audioResult || !visualResult) {
+      setError("请先完成脚本、配音和候选素材步骤。");
+      return;
+    }
+
+    setLoading("video");
+    setError(null);
+    setHint(null);
+    try {
+      const materialized = selectionDirty
+        ? await applySelections(true)
+        : visualResult;
+      if (!materialized) {
+        throw new Error("素材选择尚未应用，请先应用后重试。");
+      }
+
+      const audioMap = new Map(
+        audioResult.scenes.map((scene) => [scene.scene_id, scene])
+      );
+      const visualMap = new Map(
+        materialized.scenes.map((scene) => [scene.scene_id, scene])
+      );
+      const mergedScenes = scriptResult.scenes.map((scene) => {
+        const audio = audioMap.get(scene.scene_id);
+        const visual = visualMap.get(scene.scene_id);
+        if (!audio || !visual) {
+          throw new Error(`场景 ${scene.scene_id} 缺少音频或视觉素材。`);
+        }
+        if (!visual.image_path && !visual.video_path) {
+          throw new Error(`场景 ${scene.scene_id} 缺少可合成素材。`);
+        }
+        return {
+          scene_id: scene.scene_id,
+          image_path: visual.image_path,
+          video_path: visual.video_path,
+          audio_path: audio.audio_path,
+          duration_ms: audio.duration_ms,
+          timestamps: audio.timestamps,
+        };
+      });
+
+      const result = await postJson<VideoResponse>("/video/assemble", {
+        scenes: mergedScenes,
+        bgm_style: bgmStyle,
+        bgm_enabled: bgmEnabled,
+        bgm_path: bgmPath ?? undefined,
+        aspect_ratio: aspectRatio,
+      });
+      setVisualResult(materialized);
+      setVideoResult(result);
+      setHint("视频已生成，你可以直接预览结果。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "视频合成失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  const stepList: Array<{ key: StepKey; label: string; desc: string }> = [
+    { key: "script", label: "1. 脚本", desc: "生成更完整分镜" },
+    { key: "audio", label: "2. 配音", desc: "语音与时间戳" },
+    { key: "visual", label: "3. 候选素材", desc: "聚合搜索候选池" },
+    { key: "select", label: "4. 人工挑选", desc: "逐镜头选择素材" },
+    { key: "video", label: "5. 合成成片", desc: "锁定素材后输出" },
+  ];
+
   return (
-    <div className="min-h-screen bg-sand-50">
-      <div className="bg-grid">
-        <header className="mx-auto max-w-6xl px-4 pb-8 pt-8 md:pt-12">
-          <div className="card p-6 md:p-10">
-            <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-              <div>
-                <span className="chip bg-lime-500/20 text-ink-900">Faceless SaaS</span>
-                <h1 className="mt-4 text-2xl font-semibold md:text-4xl">
-                  全自动无露脸视频生成平台
-                </h1>
-                <p className="mt-3 text-sm text-ink-500 md:text-base">
-                  从脚本、配音、画面到成片，一套工作台完成全部流程。支持单步调试和一键生成。
-                </p>
-              </div>
-              <div className="flex flex-col gap-3 text-sm">
-                <div className="rounded-xl border border-ink-900/10 bg-white/70 px-4 py-3">
-                  <p className="text-xs text-ink-500">API Base</p>
-                  <p className="mt-1 font-semibold">{API_BASE}</p>
-                </div>
-                <button className="btn-primary" onClick={handlePipeline} disabled={loading === "pipeline"}>
-                  {loading === "pipeline" ? "正在执行..." : "一键生成"}
-                </button>
-              </div>
+    <div className="studio-root" style={studioStyle}>
+      <div className="studio-shell">
+        <header className="studio-header">
+          <div>
+            <p className="studio-kicker">Semi Auto Studio</p>
+            <h1>文案生成视频工作台</h1>
+            <p className="studio-subtitle">
+              自动产出候选素材，人来做最后选择。先把相关性做好，再做速度。
+            </p>
+          </div>
+          <div className="studio-api">API: {API_BASE}</div>
+        </header>
+
+        <section className="panel settings-panel">
+          <div className="panel-title-row">
+            <h2>项目配置</h2>
+            <p>先定主题和风格，再开始分步制作</p>
+          </div>
+
+          <div className="settings-grid">
+            <label>
+              主题
+              <input
+                className="ui-input"
+                value={topic}
+                onChange={(event) => setTopic(event.target.value)}
+              />
+            </label>
+
+            <label>
+              参考链接（可选）
+              <input
+                className="ui-input"
+                value={sourceUrl}
+                onChange={(event) => setSourceUrl(event.target.value)}
+              />
+            </label>
+
+            <label>
+              分镜数量
+              <input
+                className="ui-input"
+                type="number"
+                min={3}
+                max={24}
+                value={sceneCount}
+                onChange={(event) => setSceneCount(Number(event.target.value))}
+              />
+            </label>
+
+            <label>
+              目标时长（分钟）
+              <input
+                className="ui-input"
+                type="number"
+                min={0.5}
+                max={30}
+                step={0.5}
+                value={targetDurationMinutes}
+                onChange={(event) =>
+                  setTargetDurationMinutes(Number(event.target.value))
+                }
+              />
+            </label>
+
+            <label>
+              文案密度
+              <select
+                className="ui-input"
+                value={narrationDensity}
+                onChange={(event) =>
+                  setNarrationDensity(
+                    event.target.value as "short" | "medium" | "long"
+                  )
+                }
+              >
+                <option value="short">短</option>
+                <option value="medium">中</option>
+                <option value="long">长</option>
+              </select>
+            </label>
+
+            <label>
+              人声
+              <select
+                className="ui-input"
+                value={selectedVoice}
+                onChange={(event) => setSelectedVoice(event.target.value)}
+              >
+                {voices.length === 0 && <option value="">暂无可选</option>}
+                {voices.map((voice) => (
+                  <option key={voice} value={voice}>
+                    {voice}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="ratio-card">
+            <div>
+              <h3>画幅</h3>
+              <p>只选横屏或竖屏，后续候选、预览和最终成片都会统一这个比例。</p>
             </div>
-            <div className="mt-6 grid gap-4 md:grid-cols-3">
-              <label className="text-sm">
-                主题
-                <input className="input mt-2" value={topic} onChange={(e) => setTopic(e.target.value)} />
-              </label>
-              <label className="text-sm">
-                参考链接（可选）
-                <input className="input mt-2" value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} />
-              </label>
-              <label className="text-sm">
-                分镜数量
-                <input
-                  className="input mt-2"
-                  type="number"
-                  min={3}
-                  max={12}
-                  value={sceneCount}
-                  onChange={(e) => setSceneCount(Number(e.target.value))}
-                />
-              </label>
-              <label className="text-sm">
-                人声选择
-                <select
-                  className="input mt-2"
-                  value={selectedVoice}
-                  onChange={(e) => setSelectedVoice(e.target.value)}
-                >
-                  {voices.length === 0 && <option value="">暂无</option>}
-                  {voices.map((voice) => (
-                    <option key={voice} value={voice}>
-                      {voice}
-                    </option>
-                  ))}
-                </select>
-                <div className="mt-2">
-                  <input
-                    className="input"
-                    value={voiceSampleText}
-                    onChange={(e) => setVoiceSampleText(e.target.value)}
-                    placeholder="试听文本"
-                  />
-                  <div className="mt-2 flex items-center gap-2">
-                    <button className="btn-ghost" type="button" onClick={handleVoicePreview}>
-                      试听人声
-                    </button>
-                    {voicePreviewUrl && (
-                      <audio className="w-full" controls src={voicePreviewUrl} />
-                    )}
-                  </div>
-                </div>
-              </label>
-              <label className="text-sm">
-                背景音乐风格
-                <select
-                  className="input mt-2"
-                  value={bgmStyle}
-                  onChange={(e) => setBgmStyle(e.target.value)}
-                  disabled={!bgmEnabled}
-                >
-                  {bgmStyles.length === 0 && <option value="default">默认</option>}
-                  {bgmStyles.map((style) => (
-                    <option key={style} value={style}>
-                      {style}
-                    </option>
-                  ))}
-                </select>
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    className="btn-ghost"
-                    type="button"
-                    onClick={handlePreviewBgm}
-                    disabled={!bgmEnabled}
-                  >
-                    试听背景音乐
-                  </button>
-                  {bgmPreviewUrl && (
-                    <audio className="w-full" controls src={bgmPreviewUrl} />
-                  )}
-                </div>
-                <div className="mt-3 rounded-lg border border-ink-900/10 bg-white/70 p-3">
-                  <p className="text-xs text-ink-500">AI 背景音乐</p>
-                  <input
-                    className="input mt-2"
-                    value={bgmAiPrompt}
-                    onChange={(e) => setBgmAiPrompt(e.target.value)}
-                    placeholder="输入音乐描述，比如：史诗、科技、轻快"
-                  />
-                  <div className="mt-2 flex items-center gap-2">
-                    <button className="btn-ghost" type="button" onClick={handleGenerateAIMusic}>
-                      生成 AI 背景音乐
-                    </button>
-                    {bgmAiStatus && <span className="text-xs text-ink-500">{bgmAiStatus}</span>}
-                  </div>
-                  {bgmPath && (
-                    <div className="mt-2 text-xs text-ink-500">
-                      已选择 AI 音乐作为背景
-                    </div>
-                  )}
-                </div>
-              </label>
-              <label className="text-sm">
-                关闭背景音乐
-                <div className="mt-3 flex items-center gap-2">
+            <div className="ratio-switch">
+              <button
+                type="button"
+                className={`ratio-option ${aspectRatio === "portrait" ? "active" : ""}`}
+                onClick={() => setAspectRatio("portrait")}
+              >
+                竖屏 9:16
+              </button>
+              <button
+                type="button"
+                className={`ratio-option ${aspectRatio === "landscape" ? "active" : ""}`}
+                onClick={() => setAspectRatio("landscape")}
+              >
+                横屏 16:9
+              </button>
+            </div>
+          </div>
+
+          <div className="settings-subgrid">
+            <div className="mini-card">
+              <h3>人声试听</h3>
+              <input
+                className="ui-input"
+                value={voiceSampleText}
+                onChange={(event) => setVoiceSampleText(event.target.value)}
+              />
+              <button
+                className="ui-btn ghost"
+                onClick={handleVoicePreview}
+                disabled={loading === "voice"}
+              >
+                {loading === "voice" ? "试听中..." : "试听人声"}
+              </button>
+              {voicePreviewUrl && <audio controls src={voicePreviewUrl} />}
+            </div>
+
+            <div className="mini-card">
+              <h3>背景音乐</h3>
+              <div className="row-inline">
+                <label className="checkbox-line">
                   <input
                     type="checkbox"
-                    checked={!bgmEnabled}
-                    onChange={(e) => setBgmEnabled(!e.target.checked)}
+                    checked={bgmEnabled}
+                    onChange={(event) => setBgmEnabled(event.target.checked)}
                   />
-                  <span className="text-xs text-ink-500">勾选即无背景音乐</span>
-                </div>
-              </label>
-            </div>
-            {error && (
-              <div className="mt-4 rounded-lg border border-coral-400/30 bg-coral-400/10 px-4 py-3 text-sm text-ink-900">
-                {error}
+                  启用背景音乐
+                </label>
               </div>
-            )}
-            {jobStatus && (
-              <div className="mt-4 rounded-lg border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-sm">
-                <div className="flex items-center justify-between">
-                  <span>进度：{jobStatus.message}</span>
-                  <span className="font-semibold">{jobStatus.progress}%</span>
-                </div>
-                <div className="mt-2 h-2 w-full rounded-full bg-white">
-                  <div
-                    className="h-2 rounded-full bg-blue-500"
-                    style={{ width: `${jobStatus.progress}%` }}
-                  />
-                </div>
-                {jobStatus.stage === "failed" && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      className="btn-primary"
-                      onClick={handleRetry}
-                      disabled={loading === "pipeline"}
-                    >
-                      {loading === "pipeline" ? "重试中..." : "从失败步骤重试"}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </header>
-      </div>
-
-      <main className="mx-auto max-w-6xl px-4 pb-16">
-        <div className="grid gap-6 md:grid-cols-2">
-          <section className="card p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-ink-500">Step 1</p>
-                <h2 className="text-lg font-semibold">脚本与分镜</h2>
-              </div>
-              <button className="btn-primary" onClick={handleScript} disabled={loading === "script"}>
-                {loading === "script" ? "生成中..." : "生成脚本"}
-              </button>
-            </div>
-            <textarea
-              className="textarea mt-4 h-48 font-mono text-xs"
-              value={scriptText}
-              onChange={(e) => setScriptText(e.target.value)}
-              placeholder="脚本输出将在这里显示"
-            />
-          </section>
-
-          <section className="card p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-ink-500">Step 2</p>
-                <h2 className="text-lg font-semibold">配音与时间戳</h2>
-              </div>
-              <button className="btn-primary" onClick={handleAudio} disabled={loading === "audio"}>
-                {loading === "audio" ? "生成中..." : "生成配音"}
-              </button>
-            </div>
-            <textarea
-              className="textarea mt-4 h-48 font-mono text-xs"
-              value={audioText}
-              onChange={(e) => setAudioText(e.target.value)}
-              placeholder="粘贴 Step1 的 scenes 数组"
-            />
-            {audioResult && (
-              <div className="mt-3 text-xs text-ink-500">
-                已生成 {audioResult.scenes.length} 段配音
-              </div>
-            )}
-          </section>
-
-          <section className="card p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-ink-500">Step 3</p>
-                <h2 className="text-lg font-semibold">视觉素材生成</h2>
-              </div>
-              <button className="btn-primary" onClick={handleVisual} disabled={loading === "visual"}>
-                {loading === "visual" ? "生成中..." : "生成画面"}
-              </button>
-            </div>
-            <textarea
-              className="textarea mt-4 h-48 font-mono text-xs"
-              value={visualText}
-              onChange={(e) => setVisualText(e.target.value)}
-              placeholder="粘贴 Step1 的 scenes 数组"
-            />
-            {visualResult && (
-              <div className="mt-3 text-xs text-ink-500">
-                已生成 {visualResult.scenes.length} 张图片
-              </div>
-            )}
-          </section>
-
-          <section className="card p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-ink-500">Step 4</p>
-                <h2 className="text-lg font-semibold">视频合成</h2>
-              </div>
-              <button className="btn-primary" onClick={handleVideo} disabled={loading === "video"}>
-                {loading === "video" ? "合成中..." : "生成视频"}
-              </button>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                className="btn-ghost"
-                onClick={() => mergedVideoInput && setVideoText(stringifyPretty(mergedVideoInput))}
-                disabled={!mergedVideoInput}
+              <select
+                className="ui-input"
+                value={bgmStyle}
+                onChange={(event) => setBgmStyle(event.target.value)}
+                disabled={!bgmEnabled}
               >
-                从前序结果生成输入
-              </button>
-            </div>
-            <textarea
-              className="textarea mt-4 h-48 font-mono text-xs"
-              value={videoText}
-              onChange={(e) => setVideoText(e.target.value)}
-              placeholder="合成输入 JSON 会显示在这里"
-            />
-            {videoResult && (
-              <div className="mt-3 text-xs text-ink-500">
-                <div>输出视频路径：{videoResult.video_path}</div>
-                {videoResult.video_url && (
-                  <div className="mt-2">
-                    <video
-                      className="w-full rounded-lg border border-ink-900/10"
-                      controls
-                      src={videoResult.video_url}
-                    />
-                  </div>
-                )}
-                {videoResult.subtitles_burned === false && (
-                  <div className="mt-2 text-coral-500">
-                    字幕未能烧录到视频中，请检查 ffmpeg 的字幕支持。
-                  </div>
-                )}
+                {bgmStyles.length === 0 && <option value="default">default</option>}
+                {bgmStyles.map((style) => (
+                  <option key={style} value={style}>
+                    {style}
+                  </option>
+                ))}
+              </select>
+              <div className="row-inline">
+                <button
+                  className="ui-btn ghost"
+                  onClick={handlePreviewBgm}
+                  disabled={!bgmEnabled || loading === "bgm"}
+                >
+                  {loading === "bgm" ? "加载中..." : "试听风格 BGM"}
+                </button>
               </div>
-            )}
-          </section>
-        </div>
-
-        <section className="mt-8 rounded-2xl border border-ink-900/10 bg-white/70 p-6 shadow-soft">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-wide text-ink-500">One Click</p>
-              <h3 className="text-lg font-semibold">全流程自动生成</h3>
-              <p className="text-sm text-ink-500">
-                直接使用同一套输入跑完所有模块，并在上方实时查看进度。
-              </p>
+              <input
+                className="ui-input"
+                value={bgmAiPrompt}
+                onChange={(event) => setBgmAiPrompt(event.target.value)}
+                placeholder="AI 背景音乐描述"
+              />
+              <button
+                className="ui-btn ghost"
+                onClick={handleGenerateAiMusic}
+                disabled={loading === "bgm-ai"}
+              >
+                {loading === "bgm-ai" ? "生成中..." : "生成 AI BGM"}
+              </button>
+              {bgmPreviewUrl && <audio controls src={bgmPreviewUrl} />}
+              {bgmPath && <p className="tiny-tip">已使用 AI 音乐路径</p>}
             </div>
-            <button className="btn-primary" onClick={handlePipeline} disabled={loading === "pipeline"}>
-              {loading === "pipeline" ? "执行中..." : "启动流水线"}
+          </div>
+        </section>
+
+        <section className="panel search-panel">
+          <div className="panel-title-row">
+            <h2>视频检索测试</h2>
+            <p>优先看 B 站公开视频，再补充其他公开视频源，先验证关键词命中情况</p>
+          </div>
+
+          <div className="search-test-grid">
+            <label>
+              检索关键词
+              <input
+                className="ui-input"
+                value={videoQuery}
+                onChange={(event) => setVideoQuery(event.target.value)}
+                placeholder="例如：古代中国版图变化"
+              />
+            </label>
+            <label>
+              返回数量
+              <input
+                className="ui-input"
+                type="number"
+                min={1}
+                max={20}
+                value={videoCount}
+                onChange={(event) => setVideoCount(Number(event.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="step-actions">
+            <button
+              className="ui-btn strong"
+              onClick={() => void handleVideoSearch()}
+              disabled={videoSearching}
+            >
+              {videoSearching ? "检索中..." : "视频检索测试"}
+            </button>
+            <button
+              className="ui-btn ghost"
+              onClick={() => {
+                setVideoQuery(topic);
+                void handleVideoSearch(topic);
+              }}
+              disabled={videoSearching}
+            >
+              用当前主题测试
             </button>
           </div>
-          {jobStatus?.result && (
-            <pre className="mt-4 max-h-64 overflow-auto rounded-lg bg-ink-900 p-4 text-xs text-white">
-              {stringifyPretty(jobStatus.result)}
-            </pre>
+
+          {videoResults.length > 0 ? (
+            <div className="video-results">
+              {videoResults.map((item, index) => (
+                <article key={`${item.id ?? item.media_url ?? index}`} className="video-result-card">
+                  <div className="candidate-preview">
+                    {item.media_type === "video" ? (
+                      item.preview_url && canPreviewAsVideo(item.preview_url) ? (
+                        <video
+                          src={item.preview_url}
+                          autoPlay
+                          muted
+                          loop
+                          playsInline
+                          preload="metadata"
+                        />
+                      ) : item.preview_image_url ? (
+                        <img src={item.preview_image_url} alt={item.title ?? "视频候选"} />
+                      ) : (
+                        <div className="candidate-placeholder">
+                          <div className="placeholder-kind">VIDEO</div>
+                          <div className="placeholder-title">
+                            {item.title || item.source_provider}
+                          </div>
+                          <div className="placeholder-subtitle">暂时没有可直接预览的画面</div>
+                        </div>
+                      )
+                    ) : (
+                      <img
+                        src={item.preview_image_url ?? `https://www.google.com/s2/favicons?domain=${safeHostname(item.page_url ?? item.media_url)}&sz=64`}
+                        alt={item.title ?? "页面候选"}
+                      />
+                    )}
+                  </div>
+                  <div className="candidate-info">
+                    <div className="candidate-line">
+                      <span className="meta-pill light">
+                        {item.media_type === "video" ? "VIDEO" : "PAGE"}
+                      </span>
+                      <span className="meta-pill light">{item.source_provider}</span>
+                      {typeof item.match_score === "number" && (
+                        <span className={`meta-pill ${item.match_passed ? "" : "warn"}`}>
+                          匹配 {Math.round(item.match_score)}
+                        </span>
+                      )}
+                      {item.duration_sec ? (
+                        <span className="meta-pill light">
+                          {formatMs(item.duration_sec * 1000)}
+                        </span>
+                      ) : null}
+                      <span className="score">#{Math.round(item.score)}</span>
+                    </div>
+                    <h3>{item.title || "未命名结果"}</h3>
+                    {(item.description || item.page_snippet) && (
+                      <p>{item.description ?? item.page_snippet}</p>
+                    )}
+                    {item.match_reasons?.length ? (
+                      <p className="candidate-hint">
+                        {item.match_reasons.slice(0, 2).join(" · ")}
+                      </p>
+                    ) : null}
+                    {item.source_url && item.media_type === "video" && (
+                      <a href={item.source_url} target="_blank" rel="noreferrer">
+                        打开来源
+                      </a>
+                    )}
+                    {item.media_type === "page" && item.page_url && (
+                      <a href={item.page_url} target="_blank" rel="noreferrer">
+                        打开页面
+                      </a>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-block">
+              这里会显示检索到的视频候选，方便你直接判断关键词是否有效。
+            </div>
           )}
         </section>
-      </main>
+
+        {error && <div className="notice error">{error}</div>}
+        {hint && <div className="notice hint">{hint}</div>}
+
+        <section className="panel steps-panel">
+          <div className="panel-title-row">
+            <h2>制作流程</h2>
+            <p>按步骤推进，每一步都可检查与重做</p>
+          </div>
+
+          <div className="step-badges">
+            {stepList.map((step) => (
+              <div key={step.key} className={`step-badge ${stepState[step.key]}`}>
+                <div className="step-name">{step.label}</div>
+                <div className="step-desc">{step.desc}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="step-actions">
+            <button
+              className="ui-btn"
+              onClick={handleScript}
+              disabled={loading === "script"}
+            >
+              {loading === "script" ? "生成中..." : "生成脚本"}
+            </button>
+            <button
+              className="ui-btn"
+              onClick={handleAudio}
+              disabled={!scriptResult || loading === "audio"}
+            >
+              {loading === "audio" ? "生成中..." : "生成配音"}
+            </button>
+            <button
+              className="ui-btn"
+              onClick={handleVisualCandidates}
+              disabled={!scriptResult || loading === "visual"}
+            >
+              {loading === "visual" ? "生成中..." : "生成候选素材"}
+            </button>
+            <button
+              className="ui-btn ghost"
+              onClick={() => void applySelections()}
+              disabled={!visualResult || loading === "apply"}
+            >
+              {loading === "apply" ? "应用中..." : "应用镜头选择"}
+            </button>
+            <button
+              className="ui-btn strong"
+              onClick={handleAssembleVideo}
+              disabled={!visualResult || !audioResult || loading === "video"}
+            >
+              {loading === "video" ? "合成中..." : "合成最终视频"}
+            </button>
+          </div>
+        </section>
+
+        <section className="panel scene-panel">
+          <div className="panel-title-row">
+            <h2>镜头候选素材池</h2>
+            <p>
+              每个镜头从多源候选里人工选最合适素材。当前完成度：
+              <strong> {candidateCompletion}%</strong>
+            </p>
+          </div>
+
+          <div className="scene-toolbar">
+            <button
+              className="ui-btn ghost"
+              onClick={handleAutoPickVideo}
+              disabled={!visualResult}
+            >
+              自动优先选视频
+            </button>
+            {selectionDirty && <span className="tiny-tip">你有未应用的镜头选择</span>}
+          </div>
+
+          {!visualResult && (
+            <div className="empty-block">
+              先执行“生成候选素材”，这里会出现逐镜头候选卡片。
+            </div>
+          )}
+
+          {visualResult && (
+            <div className="scene-list">
+              {visualResult.scenes.map((scene) => (
+                <article key={scene.scene_id} className="scene-card">
+                  <header className="scene-head">
+                    <div>
+                      <h3>Scene {scene.scene_id}</h3>
+                      <p>{scene.image_prompt}</p>
+                    </div>
+                    <div className="scene-meta">
+                      {scene.scene_category && (
+                        <span className="meta-pill">{scene.scene_category}</span>
+                      )}
+                      {scene.source_provider && (
+                        <span className="meta-pill">{scene.source_provider}</span>
+                      )}
+                    </div>
+                  </header>
+
+                  <p className="scene-narration">
+                    {scriptResult?.scenes.find((item) => item.scene_id === scene.scene_id)
+                      ?.narration_text ?? "无旁白"}
+                  </p>
+
+                  <div className="candidate-grid">
+                    {(scene.candidates ?? []).map((candidate) => {
+                      const selected = selectedByScene[scene.scene_id] === candidate.id;
+                      return (
+                        <button
+                          type="button"
+                          key={candidate.id}
+                          className={`candidate-card ${selected ? "selected" : ""}`}
+                          onClick={() =>
+                            handleSelectCandidate(scene.scene_id, candidate.id)
+                          }
+                        >
+                          <div className="candidate-preview">
+                            {candidate.media_type === "video" ? (
+                              candidate.preview_url && canPreviewAsVideo(candidate.preview_url) ? (
+                                <video
+                                  src={candidate.preview_url}
+                                  autoPlay
+                                  muted
+                                  loop
+                                  playsInline
+                                  preload="metadata"
+                                />
+                              ) : candidate.preview_image_url ? (
+                                <img
+                                  src={candidate.preview_image_url}
+                                  alt={candidate.title ?? "candidate"}
+                                />
+                              ) : isInlinePlayableMediaUrl(candidate.media_url) ? (
+                                <video
+                                  src={candidate.media_url}
+                                  autoPlay
+                                  muted
+                                  loop
+                                  playsInline
+                                  preload="metadata"
+                                />
+                              ) : (
+                                <div className="candidate-placeholder">
+                                  <div className="placeholder-kind">VIDEO</div>
+                                  <div className="placeholder-title">
+                                    {candidate.title || candidate.source_provider}
+                                  </div>
+                                  <div className="placeholder-subtitle">
+                                    外链视频不直接嵌入，避免浏览器阻断
+                                  </div>
+                                </div>
+                              )
+                            ) : (
+                              <img src={candidate.media_url} alt={candidate.title ?? "candidate"} />
+                            )}
+                          </div>
+                          <div className="candidate-info">
+                            <div className="candidate-line">
+                              <span className="meta-pill light">
+                                {candidate.media_type.toUpperCase()}
+                              </span>
+                              <span className="meta-pill light">
+                                {candidate.source_provider}
+                              </span>
+                              {typeof candidate.match_score === "number" && (
+                                <span className={`meta-pill ${candidate.match_passed ? "" : "warn"}`}>
+                                  匹配 {Math.round(candidate.match_score)}
+                                </span>
+                              )}
+                              <span className="score">#{Math.round(candidate.score)}</span>
+                            </div>
+                            <p className="candidate-title">
+                              {candidate.title || candidate.description || "未提供标题"}
+                            </p>
+                            {candidate.match_reasons?.length ? (
+                              <p className="candidate-hint">
+                                {candidate.match_reasons.slice(0, 2).join(" · ")}
+                              </p>
+                            ) : null}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {(scene.candidates ?? []).length === 0 && (
+                    <div className="empty-inline">本镜头未返回候选素材。</div>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel output-panel">
+          <div className="panel-title-row">
+            <h2>成片输出</h2>
+            <p>
+              时长：
+              <strong>
+                {videoResult ? ` ${formatMs(videoResult.duration_ms)}` : " --:--"}
+              </strong>
+            </p>
+          </div>
+
+          {!videoResult && (
+            <div className="empty-block">
+              完成镜头选择后点击“合成最终视频”，这里会展示结果。
+            </div>
+          )}
+
+          {videoResult && (
+            <div className="video-preview-card">
+              {videoResult.video_url ? (
+                <video controls src={videoResult.video_url} />
+              ) : (
+                <div className="empty-inline">视频已生成，但未返回可直接访问的 URL。</div>
+              )}
+              <div className="video-meta">
+                <p>视频路径：{videoResult.video_path}</p>
+                <p>SRT 路径：{videoResult.srt_path}</p>
+                {videoResult.subtitles_burned === false && (
+                  <p className="warn-text">
+                    本次导出触发了无字幕兜底，建议调整字体或 ffmpeg 字幕参数后重试。
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
