@@ -4,6 +4,7 @@ export type VideoCandidateSearchInput = {
   query: string;
   count?: number;
   aspect_ratio?: AspectRatio;
+  preview_mode?: "thumbnail" | "download";
 };
 
 export type VideoCandidateSearchResult = {

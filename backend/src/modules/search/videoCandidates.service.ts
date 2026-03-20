@@ -30,7 +30,8 @@ const YOUTUBE_PLAYER_CLIENTS = [
   "web",
 ];
 
-function shouldDownloadYoutubePreview(): boolean {
+function shouldDownloadYoutubePreview(previewMode?: "thumbnail" | "download"): boolean {
+  if (previewMode) return previewMode === "download";
   return (process.env.YOUTUBE_PREVIEW_MODE ?? "thumbnail").toLowerCase() === "download";
 }
 function clampCount(count?: number): number {
@@ -322,13 +323,14 @@ function makeSearchPageCandidate(
 async function searchPageCandidates(
   query: string,
   count: number,
-  aspectRatio: "portrait" | "landscape"
+  aspectRatio: "portrait" | "landscape",
+  previewMode?: "thumbnail" | "download"
 ): Promise<VideoCandidateSearchResult[]> {
   const scene = buildSyntheticScene(query);
   const plan = buildSceneSearchPlan(scene, aspectRatio);
   const previewDir = await ensurePreviewDir();
   const youtube = await searchYouTubeVideoCandidates(query, Math.max(1, count - 2));
-  const youtubeResults = shouldDownloadYoutubePreview()
+  const youtubeResults = shouldDownloadYoutubePreview(previewMode)
     ? await mapWithConcurrency(youtube.slice(0, Math.min(2, youtube.length)), 1, async (candidate) => {
         const videoId = candidate.media_url.split("v=").pop()?.split("&")[0];
         if (!videoId) return null;
@@ -473,7 +475,12 @@ export async function searchVideoCandidates(
       )
     : [];
 
-  const pageResults = await searchPageCandidates(query, count, aspectRatio);
+  const pageResults = await searchPageCandidates(
+    query,
+    count,
+    aspectRatio,
+    input.preview_mode
+  );
 
   const providerPriority = (provider: string, mediaType: string): number => {
     if (provider === "youtube" && mediaType === "video") return 0;

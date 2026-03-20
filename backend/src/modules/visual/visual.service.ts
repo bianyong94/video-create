@@ -6,6 +6,7 @@ import type { ScriptScene } from "../../utils/json";
 import { getImageConfig } from "../../config/env";
 import { getAspectDimensions, normalizeAspectRatio } from "../../utils/aspectRatio";
 import { mapWithConcurrency } from "../../utils/limit";
+import { searchVideoCandidates } from "../search/videoCandidates.service";
 import {
   generateImage,
   ImageProviderError,
@@ -222,6 +223,77 @@ function isNoRelevantMediaError(error: unknown): boolean {
     error.code === "NoResult" &&
     /no relevant media|no ranked media/i.test(error.message)
   );
+}
+
+async function materializePreviewCandidate(candidate: VisualCandidate): Promise<Awaited<ReturnType<typeof generateImage>>> {
+  if (candidate.preview_path) {
+    const buffer = await fs.readFile(candidate.preview_path);
+    return {
+      buffer,
+      ext: path.extname(candidate.preview_path).replace(/^\./, "") || "mp4",
+      mediaType: candidate.media_type,
+      sourceProvider: candidate.source_provider,
+      sourceUrl: candidate.source_url,
+      sourceAuthor: candidate.source_author,
+      sourceQuery: candidate.source_query,
+      selectionScore: candidate.score,
+    };
+  }
+
+  if (candidate.preview_image_url) {
+    const response = await fetch(candidate.preview_image_url);
+    if (!response.ok) {
+      throw new Error(`Failed to download preview image: ${response.status}`);
+    }
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      ext: "jpg",
+      mediaType: "image",
+      sourceProvider: candidate.source_provider,
+      sourceUrl: candidate.source_url,
+      sourceAuthor: candidate.source_author,
+      sourceQuery: candidate.source_query,
+      selectionScore: candidate.score,
+    };
+  }
+
+  throw new Error("Selected candidate has no local preview to materialize.");
+}
+
+async function buildSearchDrivenCandidates(
+  scene: ScriptScene,
+  aspectRatio: "portrait" | "landscape"
+): Promise<VisualCandidate[]> {
+  const results = await searchVideoCandidates({
+    query: buildStockSearchQuery(scene) || scene.image_prompt,
+    count: 6,
+    aspect_ratio: aspectRatio,
+    preview_mode: "thumbnail",
+  });
+
+  return results
+    .filter(
+      (candidate) =>
+        candidate.media_type === "video" &&
+        ((candidate.match_passed ?? false) || (candidate.match_score ?? 0) >= 55)
+    )
+    .map((candidate) => ({
+      id: candidate.id,
+      media_type: candidate.media_type,
+      media_url: candidate.media_url,
+      preview_path: candidate.preview_path,
+      preview_image_url: candidate.preview_image_url,
+      source_provider: candidate.source_provider,
+      source_url: candidate.source_url,
+      source_author: candidate.source_author,
+      source_query: candidate.source_query,
+      score: candidate.score,
+      title: candidate.title,
+      description: candidate.description ?? candidate.page_snippet,
+      match_score: candidate.match_score,
+      match_passed: candidate.match_passed,
+      match_reasons: candidate.match_reasons,
+    }));
 }
 
 async function createVideoCandidatePreview(
@@ -500,6 +572,7 @@ export async function generateVisuals(
     async (scene: ScriptScene) => {
       let imageResult: Awaited<ReturnType<typeof generateImage>>;
       let rankedCandidates: RankedSceneCandidate[] = [];
+      let searchDrivenCandidates: VisualCandidate[] = [];
       const selectedCandidateId = selectionMap.get(scene.scene_id);
       if (config.imageProvider === "qwen") {
         imageResult = await generateSceneImage(
@@ -527,57 +600,34 @@ export async function generateVisuals(
         );
       } else if (STOCK_SEARCH_PROVIDERS.has(config.imageProvider)) {
         try {
-          rankedCandidates = await searchRankedCandidates(
-            scene,
-            config.imageProvider,
-            12,
-            aspectRatio
-          );
-        } catch (error) {
-          if (!isNoRelevantMediaError(error)) {
-            throw error;
-          }
-          rankedCandidates = [];
+          searchDrivenCandidates = await buildSearchDrivenCandidates(scene, aspectRatio);
+        } catch {
+          searchDrivenCandidates = [];
         }
 
-        const prioritized = selectedCandidateId
+        const prioritizedSearchCandidates = selectedCandidateId
           ? [
-              ...rankedCandidates.filter((item) => item.id === selectedCandidateId),
-              ...rankedCandidates.filter((item) => item.id !== selectedCandidateId),
+              ...searchDrivenCandidates.filter((item) => item.id === selectedCandidateId),
+              ...searchDrivenCandidates.filter((item) => item.id !== selectedCandidateId),
             ]
-          : rankedCandidates;
+          : searchDrivenCandidates;
 
-        if (prioritized.length) {
-          let lastError: unknown = null;
+        if (prioritizedSearchCandidates.length) {
           try {
-            imageResult = await (async () => {
-              for (const candidate of prioritized.slice(0, 5)) {
-                try {
-                  return await materializeCandidate(candidate);
-                } catch (error) {
-                  lastError = error;
-                }
-              }
-              throw lastError instanceof Error
-                ? lastError
-                : new Error(`Failed to materialize candidate for scene ${scene.scene_id}`);
-            })();
-          } catch (error) {
-            if (
-              error instanceof ImageProviderError &&
-              error.code === "DownloadFailed"
-            ) {
-              imageResult = await generateConfiguredFallbackImage(
-                buildStockSearchQuery(scene) || scene.image_prompt,
-                scene.scene_id,
-                aspectRatio,
-                config
-              );
-            } else {
-              throw error;
-            }
+            imageResult = await materializePreviewCandidate(prioritizedSearchCandidates[0]);
+          } catch {
+            imageResult = await generateConfiguredFallbackImage(
+              buildStockSearchQuery(scene) || scene.image_prompt,
+              scene.scene_id,
+              aspectRatio,
+              config
+            );
           }
-        } else {
+        }
+
+        rankedCandidates = [];
+
+        if (!searchDrivenCandidates.length) {
           imageResult = await generateConfiguredFallbackImage(
             buildStockSearchQuery(scene) || scene.image_prompt,
             scene.scene_id,
@@ -610,39 +660,43 @@ export async function generateVisuals(
         await fs.writeFile(imagePath, normalized);
       }
 
-      const candidates: VisualCandidate[] = rankedCandidates.map((candidate) => ({
-        id: candidate.id,
-        media_type: candidate.media_type,
-        media_url: candidate.media_url,
-        preview_path: undefined,
-        source_provider: candidate.source_provider,
-        source_url: candidate.source_url,
-        source_author: candidate.source_author,
-        source_query: candidate.source_query,
-        score: candidate.score,
-        title: candidate.title,
-        description: candidate.description,
-        match_score: candidate.match_score,
-        match_passed: candidate.match_passed,
-        match_reasons: candidate.match_reasons,
-      }));
+      const candidates: VisualCandidate[] = searchDrivenCandidates.length
+        ? searchDrivenCandidates
+        : rankedCandidates.map((candidate) => ({
+            id: candidate.id,
+            media_type: candidate.media_type,
+            media_url: candidate.media_url,
+            preview_path: undefined,
+            source_provider: candidate.source_provider,
+            source_url: candidate.source_url,
+            source_author: candidate.source_author,
+            source_query: candidate.source_query,
+            score: candidate.score,
+            title: candidate.title,
+            description: candidate.description,
+            match_score: candidate.match_score,
+            match_passed: candidate.match_passed,
+            match_reasons: candidate.match_reasons,
+          }));
 
-      const previewDir = await ensureCandidatePreviewDir();
-      const previewTargets = rankedCandidates
-        .filter((candidate) => candidate.media_type === "video")
-        .slice(0, CANDIDATE_PREVIEW_LIMIT);
-      const previewMap = new Map<string, string | undefined>();
-      await Promise.all(
-        previewTargets.map(async (candidate) => {
-          const previewPath = await createVideoCandidatePreview(candidate, previewDir);
-          previewMap.set(candidate.id, previewPath);
-        })
-      );
+      if (!searchDrivenCandidates.length) {
+        const previewDir = await ensureCandidatePreviewDir();
+        const previewTargets = rankedCandidates
+          .filter((candidate) => candidate.media_type === "video")
+          .slice(0, CANDIDATE_PREVIEW_LIMIT);
+        const previewMap = new Map<string, string | undefined>();
+        await Promise.all(
+          previewTargets.map(async (candidate) => {
+            const previewPath = await createVideoCandidatePreview(candidate, previewDir);
+            previewMap.set(candidate.id, previewPath);
+          })
+        );
 
-      for (const candidate of candidates) {
-        const previewPath = previewMap.get(candidate.id);
-        if (previewPath) {
-          candidate.preview_path = previewPath;
+        for (const candidate of candidates) {
+          const previewPath = previewMap.get(candidate.id);
+          if (previewPath) {
+            candidate.preview_path = previewPath;
+          }
         }
       }
 

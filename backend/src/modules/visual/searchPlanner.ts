@@ -252,6 +252,42 @@ const HISTORY_NOISE_KEYWORDS = [
   "cover",
 ];
 
+const CHINA_CORE_KEYWORDS = ["中国", "中华", "华夏", "china"];
+const CHINA_CONFLICT_KEYWORDS = [
+  "世界",
+  "全球",
+  "欧洲",
+  "埃及",
+  "日本",
+  "美国",
+  "罗马",
+  "希腊",
+  "印度",
+  "法国",
+  "英国",
+  "德国",
+  "俄国",
+  "非洲",
+  "中东",
+  "world",
+  "global",
+  "europe",
+  "egypt",
+  "japan",
+  "america",
+  "roman",
+  "greece",
+  "india",
+  "france",
+  "britain",
+  "germany",
+  "russia",
+  "africa",
+  "middle east",
+];
+const MAP_CORE_KEYWORDS = ["版图", "疆域", "地图", "map", "atlas", "border"];
+const DYNASTY_CORE_KEYWORDS = ["王朝", "朝代", "秦", "汉", "唐", "宋", "元", "明", "清", "dynasty", "empire"];
+
 function normalizeText(text: string): string {
   return text
     .toLowerCase()
@@ -638,6 +674,46 @@ export function evaluateSearchCandidate(
     }
     if (candidate.mediaType === "video" && !hasStrongHistorySignal) {
       score -= 6;
+    }
+
+    const sourceIntent = normalizeText(
+      [scene.stock_query, scene.narration_text, scene.image_prompt]
+        .filter(Boolean)
+        .join(" ")
+    );
+    const wantsChina = CHINA_CORE_KEYWORDS.some((keyword) => sourceIntent.includes(keyword));
+    const hasChina = CHINA_CORE_KEYWORDS.some((keyword) => haystack.includes(keyword));
+    const hasChinaConflict = CHINA_CONFLICT_KEYWORDS.some((keyword) => haystack.includes(keyword));
+    const wantsMap = MAP_CORE_KEYWORDS.some((keyword) => sourceIntent.includes(keyword));
+    const hasMap = MAP_CORE_KEYWORDS.some((keyword) => haystack.includes(keyword));
+    const wantsDynasty = DYNASTY_CORE_KEYWORDS.some((keyword) => sourceIntent.includes(keyword));
+    const hasDynasty = DYNASTY_CORE_KEYWORDS.some((keyword) => haystack.includes(keyword));
+
+    if (wantsChina) {
+      if (hasChina) {
+        score += 18;
+      } else {
+        score -= 20;
+      }
+      if (hasChinaConflict) {
+        score -= 26;
+      }
+    }
+
+    if (wantsMap) {
+      if (hasMap) {
+        score += 10;
+      } else {
+        score -= 12;
+      }
+    }
+
+    if (wantsDynasty) {
+      if (hasDynasty) {
+        score += 8;
+      } else {
+        score -= 10;
+      }
     }
   }
 
