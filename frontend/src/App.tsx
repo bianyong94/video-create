@@ -34,6 +34,10 @@ type VisualCandidate = {
   preview_url?: string;
   preview_image_url?: string;
   preview_path?: string;
+  clip_start_sec?: number;
+  clip_end_sec?: number;
+  transcript_match_score?: number;
+  transcript_matched_text?: string;
   source_provider: string;
   source_url?: string;
   source_author?: string;
@@ -91,6 +95,10 @@ type VideoCandidateResult = {
   media_url: string;
   preview_url?: string;
   preview_embed_url?: string;
+  clip_start_sec?: number;
+  clip_end_sec?: number;
+  transcript_match_score?: number;
+  transcript_matched_text?: string;
   source_provider: string;
   source_url?: string;
   source_author?: string;
@@ -122,6 +130,42 @@ type VideoResponse = {
   video_url?: string;
   srt_url?: string;
   subtitles_burned?: boolean;
+};
+
+type CommentarySegment = {
+  id: string;
+  index: number;
+  title: string;
+  source_path: string;
+  source_url?: string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+  transcript_text?: string;
+  transcript_summary?: string;
+  commentary_text?: string;
+  highlight_text?: string;
+  keep_original_audio: boolean;
+  original_audio_gain: number;
+  commentary_audio_gain: number;
+  suggested_clip_start_ms?: number;
+  suggested_clip_end_ms?: number;
+  status: "pending" | "ready" | "analyzing" | "failed";
+  error?: string;
+};
+
+type CommentaryProject = {
+  id: string;
+  user_id: string;
+  title: string;
+  source_path: string;
+  source_url?: string;
+  duration_ms: number;
+  status: "draft" | "imported" | "segmented" | "analyzing" | "ready" | "failed";
+  segment_minutes: number;
+  segments: CommentarySegment[];
+  created_at: string;
+  updated_at: string;
 };
 
 async function postJson<T>(path: string, body: unknown, headers?: HeadersInit) {
@@ -191,6 +235,12 @@ function canPreviewAsVideo(url?: string): boolean {
 type StepKey = "script" | "audio" | "visual" | "select" | "video";
 
 export default function App() {
+  const DEMO_USER_ID = "demo-user";
+  const [commentaryTitle, setCommentaryTitle] = useState("");
+  const [segmentMinutes, setSegmentMinutes] = useState(5);
+  const [commentaryProject, setCommentaryProject] = useState<CommentaryProject | null>(null);
+  const [commentaryFile, setCommentaryFile] = useState<File | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const [topic, setTopic] = useState("古代中国版图变化");
   const [sourceUrl, setSourceUrl] = useState("");
   const [sceneCount, setSceneCount] = useState(8);
@@ -235,6 +285,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const didMountRef = useRef(false);
+  const commentaryFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -429,6 +480,113 @@ export default function App() {
       setError(err instanceof Error ? err.message : "脚本生成失败");
     } finally {
       setLoading(null);
+    }
+  }
+
+  function handlePickCommentaryFile(file?: File | null) {
+    if (!file) return;
+    setCommentaryFile(file);
+    if (!commentaryTitle.trim()) {
+      const name = file.name.replace(/\.[^.]+$/, "");
+      setCommentaryTitle(name);
+    }
+    setHint(`已选中文件：${file.name}`);
+  }
+
+  async function handleCreateCommentaryProject() {
+    if (!commentaryFile) {
+      setError("请先选择一个视频文件。");
+      return;
+    }
+    setLoading("commentary-import");
+    setError(null);
+    setHint(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", commentaryFile);
+      if (commentaryTitle.trim()) {
+        formData.append("title", commentaryTitle.trim());
+      }
+      const response = await fetch(`${API_BASE}/commentary/projects/upload`, {
+        method: "POST",
+        headers: { "x-user-id": DEMO_USER_ID },
+        body: formData,
+      });
+      const result = (await response.json()) as CommentaryProject | { error?: string };
+      if (!response.ok) {
+        throw new Error("error" in result ? result.error ?? "导入视频失败" : "导入视频失败");
+      }
+      setCommentaryProject(result as CommentaryProject);
+      setHint("视频已导入，下一步可以自动切段。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "导入视频失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleSegmentCommentaryProject() {
+    if (!commentaryProject) {
+      setError("请先导入视频项目。");
+      return;
+    }
+    setLoading("commentary-segment");
+    setError(null);
+    setHint(null);
+    try {
+      const result = await postJson<CommentaryProject>(
+        `/commentary/projects/${commentaryProject.id}/segmentize`,
+        { segmentMinutes }
+      );
+      setCommentaryProject(result);
+      setHint("切段完成，下一步可以分析每段内容。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "视频切段失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleAnalyzeCommentaryProject() {
+    if (!commentaryProject?.segments.length) {
+      setError("请先完成导入和切段。");
+      return;
+    }
+    setLoading("commentary-analyze");
+    setError(null);
+    setHint(null);
+    try {
+      const result = await postJson<CommentaryProject>(
+        `/commentary/projects/${commentaryProject.id}/analyze`,
+        {}
+      );
+      setCommentaryProject(result);
+      setHint("片段分析完成，现在可以手动修改每段解说文案。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "片段分析失败");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleUpdateCommentarySegment(segmentId: string, patch: Partial<CommentarySegment>) {
+    if (!commentaryProject) return;
+    try {
+      const response = await fetch(
+        `${API_BASE}/commentary/projects/${commentaryProject.id}/segments/${segmentId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error ?? "更新片段失败");
+      }
+      setCommentaryProject(data as CommentaryProject);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新片段失败");
     }
   }
 
@@ -629,18 +787,215 @@ export default function App() {
         <header className="studio-header">
           <div>
             <p className="studio-kicker">Semi Auto Studio</p>
-            <h1>文案生成视频工作台</h1>
+            <h1>长视频解说工作台</h1>
             <p className="studio-subtitle">
-              自动产出候选素材，人来做最后选择。先把相关性做好，再做速度。
+              主流程先切到用户自有视频驱动。我们把导入、切段、转录、解说建议和人工微调先做扎实，旧的视频生成链路继续保留在下方。
             </p>
           </div>
           <div className="studio-api">API: {API_BASE}</div>
         </header>
 
+        <section className="panel commentary-workbench-panel">
+          <div className="panel-title-row">
+            <h2>长视频解说工作台</h2>
+            <p>支持拖拽或点击上传本地视频，先做导入、切段、分析与手动编辑。</p>
+          </div>
+
+          <div className="settings-grid commentary-settings-grid">
+            <label>
+              上传视频
+              <div
+                className={`upload-dropzone ${dragActive ? "drag-active" : ""}`}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragActive(true);
+                }}
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  setDragActive(true);
+                }}
+                onDragLeave={(event) => {
+                  event.preventDefault();
+                  if (event.currentTarget === event.target) {
+                    setDragActive(false);
+                  }
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setDragActive(false);
+                  handlePickCommentaryFile(event.dataTransfer.files?.[0] ?? null);
+                }}
+              >
+                <input
+                  ref={commentaryFileInputRef}
+                  type="file"
+                  accept="video/*"
+                  className="upload-file-input"
+                  onChange={(event) => handlePickCommentaryFile(event.target.files?.[0] ?? null)}
+                />
+                <div className="upload-dropzone-copy">
+                  <strong>拖动视频到这里</strong>
+                  <span>或点击按钮，从电脑中选择文件</span>
+                </div>
+                <button
+                  type="button"
+                  className="ui-btn ghost"
+                  onClick={() => commentaryFileInputRef.current?.click()}
+                >
+                  选择视频文件
+                </button>
+                {commentaryFile ? (
+                  <p className="tiny-tip">
+                    当前文件：{commentaryFile.name} · {(commentaryFile.size / (1024 * 1024)).toFixed(1)} MB
+                  </p>
+                ) : (
+                  <p className="tiny-tip">支持 mp4、mov、m4v、webm 等常见视频格式。</p>
+                )}
+              </div>
+            </label>
+
+            <label>
+              项目标题
+              <input
+                className="ui-input"
+                value={commentaryTitle}
+                onChange={(event) => setCommentaryTitle(event.target.value)}
+                placeholder="可选，不填则默认用文件名"
+              />
+            </label>
+
+            <label>
+              每段时长（分钟）
+              <input
+                className="ui-input"
+                type="number"
+                min={1}
+                max={20}
+                value={segmentMinutes}
+                onChange={(event) => setSegmentMinutes(Number(event.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="step-actions">
+            <button className="ui-btn strong" onClick={() => void handleCreateCommentaryProject()} disabled={loading === "commentary-import"}>
+              {loading === "commentary-import" ? "导入中..." : "1. 导入本地视频"}
+            </button>
+            <button className="ui-btn" onClick={() => void handleSegmentCommentaryProject()} disabled={!commentaryProject || loading === "commentary-segment"}>
+              {loading === "commentary-segment" ? "切段中..." : "2. 自动切段"}
+            </button>
+            <button className="ui-btn" onClick={() => void handleAnalyzeCommentaryProject()} disabled={!commentaryProject?.segments.length || loading === "commentary-analyze"}>
+              {loading === "commentary-analyze" ? "分析中..." : "3. 分析片段"}
+            </button>
+          </div>
+
+          {!commentaryProject && (
+            <div className="empty-block">
+              先拖拽或选择一个本地长视频，再进入切段和分析。后续我们再补云端上传与在线素材管理。
+            </div>
+          )}
+
+          {commentaryProject && (
+            <div className="scene-list">
+              <article className="scene-card commentary-project-card">
+                <header className="scene-head">
+                  <div>
+                    <h3>{commentaryProject.title}</h3>
+                    <p>{commentaryProject.source_path}</p>
+                  </div>
+                  <div className="scene-meta">
+                    <span className="meta-pill">{commentaryProject.status}</span>
+                    <span className="meta-pill light">总时长 {formatMs(commentaryProject.duration_ms)}</span>
+                    <span className="meta-pill light">共 {commentaryProject.segments.length} 段</span>
+                  </div>
+                </header>
+              </article>
+
+              {commentaryProject.segments.map((segment) => (
+                <article key={segment.id} className="scene-card commentary-segment-card">
+                  <header className="scene-head">
+                    <div>
+                      <h3>{segment.title}</h3>
+                      <p>
+                        {formatMs(segment.start_ms)} - {formatMs(segment.end_ms)} · {formatMs(segment.duration_ms)}
+                      </p>
+                    </div>
+                    <div className="scene-meta">
+                      <span className="meta-pill">{segment.status}</span>
+                      {segment.error ? <span className="meta-pill warn">需处理</span> : null}
+                      {segment.keep_original_audio ? <span className="meta-pill light">保留原声</span> : null}
+                    </div>
+                  </header>
+
+                  <div className="commentary-grid">
+                    <div className="mini-card commentary-preview-card">
+                      <h3>片段预览</h3>
+                      {segment.source_url ? (
+                        <video controls src={segment.source_url} />
+                      ) : (
+                        <div className="empty-inline">暂时没有可访问预览</div>
+                      )}
+                    </div>
+
+                    <div className="mini-card commentary-text-card">
+                      <h3>转录文本</h3>
+                      <p>{segment.transcript_text ?? "等待分析"}</p>
+                      {segment.error ? <p className="warn-text">{segment.error}</p> : null}
+                    </div>
+
+                    <div className="mini-card commentary-text-card">
+                      <h3>内容摘要</h3>
+                      <textarea
+                        className="ui-input commentary-textarea"
+                        value={segment.transcript_summary ?? ""}
+                        onChange={(event) =>
+                          void handleUpdateCommentarySegment(segment.id, {
+                            transcript_summary: event.target.value,
+                          })
+                        }
+                        placeholder="分析后会生成摘要，这里可以手动修改。"
+                      />
+                    </div>
+
+                    <div className="mini-card commentary-text-card">
+                      <h3>解说文案</h3>
+                      <textarea
+                        className="ui-input commentary-textarea"
+                        value={segment.commentary_text ?? ""}
+                        onChange={(event) =>
+                          void handleUpdateCommentarySegment(segment.id, {
+                            commentary_text: event.target.value,
+                          })
+                        }
+                        placeholder="这里会生成解说建议，适合人工继续润色。"
+                      />
+                      {segment.highlight_text ? (
+                        <p className="candidate-hint">精彩点建议：{segment.highlight_text}</p>
+                      ) : null}
+                      <label className="checkbox-line">
+                        <input
+                          type="checkbox"
+                          checked={segment.keep_original_audio}
+                          onChange={(event) =>
+                            void handleUpdateCommentarySegment(segment.id, {
+                              keep_original_audio: event.target.checked,
+                            })
+                          }
+                        />
+                        该段优先保留原声
+                      </label>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section className="panel settings-panel">
           <div className="panel-title-row">
-            <h2>项目配置</h2>
-            <p>先定主题和风格，再开始分步制作</p>
+            <h2>旧版自动生成实验区</h2>
+            <p>保留原有脚本、配音、候选素材与合成功能，便于继续实验和对比。</p>
           </div>
 
           <div className="settings-grid">
@@ -668,7 +1023,7 @@ export default function App() {
                 className="ui-input"
                 type="number"
                 min={3}
-                max={24}
+                max={120}
                 value={sceneCount}
                 onChange={(event) => setSceneCount(Number(event.target.value))}
               />
@@ -680,7 +1035,7 @@ export default function App() {
                 className="ui-input"
                 type="number"
                 min={0.5}
-                max={30}
+                max={60}
                 step={0.5}
                 value={targetDurationMinutes}
                 onChange={(event) =>
@@ -926,6 +1281,16 @@ export default function App() {
                         {item.match_reasons.slice(0, 2).join(" · ")}
                       </p>
                     ) : null}
+                    {item.transcript_matched_text ? (
+                      <p className="candidate-hint">
+                        字幕命中：{item.transcript_matched_text}
+                      </p>
+                    ) : null}
+                    {typeof item.clip_start_sec === "number" && typeof item.clip_end_sec === "number" ? (
+                      <p className="candidate-hint">
+                        片段建议：{formatMs(item.clip_start_sec * 1000)} - {formatMs(item.clip_end_sec * 1000)}
+                      </p>
+                    ) : null}
                     {item.source_url && item.media_type === "video" && (
                       <a href={item.source_url} target="_blank" rel="noreferrer">
                         打开来源
@@ -1127,6 +1492,16 @@ export default function App() {
                             {candidate.match_reasons?.length ? (
                               <p className="candidate-hint">
                                 {candidate.match_reasons.slice(0, 2).join(" · ")}
+                              </p>
+                            ) : null}
+                            {candidate.transcript_matched_text ? (
+                              <p className="candidate-hint">
+                                字幕命中：{candidate.transcript_matched_text}
+                              </p>
+                            ) : null}
+                            {typeof candidate.clip_start_sec === "number" && typeof candidate.clip_end_sec === "number" ? (
+                              <p className="candidate-hint">
+                                片段建议：{formatMs(candidate.clip_start_sec * 1000)} - {formatMs(candidate.clip_end_sec * 1000)}
                               </p>
                             ) : null}
                           </div>

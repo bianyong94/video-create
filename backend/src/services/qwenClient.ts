@@ -5,6 +5,11 @@ export type QwenMessage = {
   content: string;
 };
 
+type QwenChatOptions = {
+  maxTokens?: number;
+  temperature?: number;
+};
+
 type QwenResponse = {
   choices?: Array<{
     message?: {
@@ -16,7 +21,10 @@ type QwenResponse = {
   };
 };
 
-export async function chatWithQwen(messages: QwenMessage[]): Promise<string> {
+export async function chatWithQwen(
+  messages: QwenMessage[],
+  options?: QwenChatOptions
+): Promise<string> {
   const config = getQwenChatConfig();
   const url = `${config.qwenChatBaseUrl}${config.qwenChatPath}`;
 
@@ -29,8 +37,8 @@ export async function chatWithQwen(messages: QwenMessage[]): Promise<string> {
     body: JSON.stringify({
       model: config.qwenChatModel,
       messages,
-      temperature: config.qwenChatTemperature,
-      max_tokens: config.qwenChatMaxTokens,
+      temperature: options?.temperature ?? config.qwenChatTemperature,
+      max_tokens: options?.maxTokens ?? config.qwenChatMaxTokens,
     }),
   });
 

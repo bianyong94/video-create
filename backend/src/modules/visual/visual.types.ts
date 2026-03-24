@@ -5,6 +5,10 @@ export type VisualCandidate = {
   preview_url?: string;
   preview_image_url?: string;
   preview_path?: string;
+  clip_start_sec?: number;
+  clip_end_sec?: number;
+  transcript_match_score?: number;
+  transcript_matched_text?: string;
   source_provider: string;
   source_url?: string;
   source_author?: string;

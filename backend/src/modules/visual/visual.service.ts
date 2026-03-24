@@ -1,12 +1,15 @@
 import { promises as fs } from "fs";
+import { execFile as execFileCallback } from "child_process";
 import ffmpeg from "fluent-ffmpeg";
 import path from "path";
 import sharp from "sharp";
+import { promisify } from "util";
 import type { ScriptScene } from "../../utils/json";
 import { getImageConfig } from "../../config/env";
 import { getAspectDimensions, normalizeAspectRatio } from "../../utils/aspectRatio";
 import { mapWithConcurrency } from "../../utils/limit";
 import { searchVideoCandidates } from "../search/videoCandidates.service";
+import { buildSceneSearchQuery } from "./searchPlanner";
 import {
   generateImage,
   ImageProviderError,
@@ -19,6 +22,8 @@ import type {
   VisualGenerateResponse,
   VisualSceneResult,
 } from "./visual.types";
+
+const execFile = promisify(execFileCallback);
 
 const STOCK_SEARCH_PROVIDERS = new Set([
   "pexels",
@@ -205,16 +210,7 @@ function enhanceImagePrompt(prompt: string, sceneId: number): string {
 }
 
 function buildStockSearchQuery(scene: ScriptScene): string {
-  if (scene.stock_query?.trim()) {
-    return scene.stock_query.trim().slice(0, 80);
-  }
-
-  return [scene.narration_text, scene.image_prompt]
-    .join(" ")
-    .replace(/[^A-Za-z0-9\u4e00-\u9fff\s-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
+  return buildSceneSearchQuery(scene).slice(0, 80);
 }
 
 function isNoRelevantMediaError(error: unknown): boolean {
@@ -226,6 +222,62 @@ function isNoRelevantMediaError(error: unknown): boolean {
 }
 
 async function materializePreviewCandidate(candidate: VisualCandidate): Promise<Awaited<ReturnType<typeof generateImage>>> {
+  if (
+    candidate.source_provider === "youtube" &&
+    candidate.media_type === "video" &&
+    candidate.source_url &&
+    typeof candidate.clip_start_sec === "number"
+  ) {
+    const previewDir = await ensureCandidatePreviewDir();
+    const fileStem = `${candidate.source_provider}-${candidate.id}`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const fullPath = path.join(previewDir, `${fileStem}-selected-full.mp4`);
+    const clipPath = path.join(previewDir, `${fileStem}-selected-clip.mp4`);
+    const outputTemplate = fullPath.replace(/\.mp4$/i, ".%(ext)s");
+    try {
+      await execFile(
+        process.env.YT_DLP_PYTHON_BIN ?? "python3",
+        [
+          "-m",
+          "yt_dlp",
+          "--no-playlist",
+          "--quiet",
+          "--no-warnings",
+          "--merge-output-format",
+          "mp4",
+          "-f",
+          "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+          "-o",
+          outputTemplate,
+          candidate.source_url,
+        ],
+        { maxBuffer: 20 * 1024 * 1024 }
+      );
+      const startSec = Math.max(0, Math.floor(candidate.clip_start_sec));
+      const durationSec = Math.max(
+        4,
+        Math.min(
+          14,
+          Math.ceil((candidate.clip_end_sec ?? candidate.clip_start_sec + 8) - candidate.clip_start_sec)
+        )
+      );
+      await createPreviewClip(fullPath, clipPath, durationSec, startSec);
+      const buffer = await fs.readFile(clipPath);
+      return {
+        buffer,
+        ext: "mp4",
+        mediaType: "video",
+        sourceProvider: candidate.source_provider,
+        sourceUrl: candidate.source_url,
+        sourceAuthor: candidate.source_author,
+        sourceQuery: candidate.source_query,
+        selectionScore: candidate.score,
+      };
+    } finally {
+      await fs.unlink(fullPath).catch(() => undefined);
+      await fs.unlink(clipPath).catch(() => undefined);
+    }
+  }
+
   if (candidate.preview_path) {
     const buffer = await fs.readFile(candidate.preview_path);
     return {
@@ -293,6 +345,10 @@ async function buildSearchDrivenCandidates(
       match_score: candidate.match_score,
       match_passed: candidate.match_passed,
       match_reasons: candidate.match_reasons,
+      clip_start_sec: candidate.clip_start_sec,
+      clip_end_sec: candidate.clip_end_sec,
+      transcript_match_score: candidate.transcript_match_score,
+      transcript_matched_text: candidate.transcript_matched_text,
     }));
 }
 

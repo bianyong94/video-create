@@ -5,6 +5,11 @@ export type OpenAIMessage = {
   content: string;
 };
 
+type OpenAIChatOptions = {
+  maxTokens?: number;
+  temperature?: number;
+};
+
 type OpenAIChatResponse = {
   choices?: Array<{
     message?: {
@@ -16,7 +21,10 @@ type OpenAIChatResponse = {
   };
 };
 
-export async function chatWithOpenAI(messages: OpenAIMessage[]): Promise<string> {
+export async function chatWithOpenAI(
+  messages: OpenAIMessage[],
+  options?: OpenAIChatOptions
+): Promise<string> {
   const config = getOpenAIConfig();
   const url = `${config.openaiBaseUrl}/chat/completions`;
 
@@ -29,8 +37,8 @@ export async function chatWithOpenAI(messages: OpenAIMessage[]): Promise<string>
     body: JSON.stringify({
       model: config.openaiChatModel,
       messages,
-      temperature: 0.2,
-      max_tokens: 2000,
+      temperature: options?.temperature ?? 0.2,
+      max_tokens: options?.maxTokens ?? 2000,
     }),
   });
 

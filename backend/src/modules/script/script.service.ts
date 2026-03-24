@@ -25,6 +25,32 @@ const DEFAULT_TARGET_DURATION_MINUTES = 2;
 
 type ScriptProvider = "qwen" | "openai" | "ollama";
 
+type ScriptChatOptions = {
+  maxTokens: number;
+  temperature: number;
+};
+
+function deriveSceneCount(targetDurationMinutes: number, requestedSceneCount?: number): number {
+  if (typeof requestedSceneCount === "number" && Number.isFinite(requestedSceneCount)) {
+    return Math.max(3, Math.min(120, Math.trunc(requestedSceneCount)));
+  }
+  const estimated = Math.round((targetDurationMinutes * 60) / 12);
+  return Math.max(6, Math.min(120, estimated));
+}
+
+function deriveScriptChatOptions(
+  sceneCount: number,
+  targetDurationMinutes: number,
+  narrationDensity: NarrationDensity
+): ScriptChatOptions {
+  const densityFactor = narrationDensity === "long" ? 1.35 : narrationDensity === "short" ? 0.8 : 1;
+  const estimatedTokens = Math.round(sceneCount * 220 * densityFactor + targetDurationMinutes * 140);
+  return {
+    maxTokens: Math.max(2500, Math.min(12000, estimatedTokens)),
+    temperature: narrationDensity === "long" ? 0.78 : 0.68,
+  };
+}
+
 function getScriptProviderOrder(preferred: ScriptProvider): ScriptProvider[] {
   const providers: ScriptProvider[] = [preferred];
 
@@ -70,27 +96,33 @@ function shouldTryNextScriptProvider(
 
 async function chatWithProvider(
   provider: ScriptProvider,
-  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+  options: ScriptChatOptions
 ): Promise<string> {
   if (provider === "openai") {
-    return chatWithOpenAI(messages);
+    return chatWithOpenAI(messages, options);
   }
   if (provider === "ollama") {
-    return chatWithOllama(messages);
+    return chatWithOllama(messages, options);
   }
-  return chatWithQwen(messages);
+  return chatWithQwen(messages, options);
 }
 
 export async function generateScript(
   input: ScriptGenerateInput
 ): Promise<ScriptPayload> {
   const { scriptProvider } = getScriptConfig();
-  const sceneCount = input.sceneCount ?? DEFAULT_SCENE_COUNT;
   const narrationDensity = input.narrationDensity ?? "medium";
   const aspectRatio = input.aspectRatio ?? "portrait";
   const targetDurationMinutes = Math.max(
     0.5,
-    Math.min(30, input.targetDurationMinutes ?? DEFAULT_TARGET_DURATION_MINUTES)
+    Math.min(60, input.targetDurationMinutes ?? DEFAULT_TARGET_DURATION_MINUTES)
+  );
+  const sceneCount = deriveSceneCount(targetDurationMinutes, input.sceneCount);
+  const chatOptions = deriveScriptChatOptions(
+    sceneCount,
+    targetDurationMinutes,
+    narrationDensity
   );
 
   const baseMessages = [
@@ -130,7 +162,7 @@ export async function generateScript(
       let lastError: unknown = null;
       for (const provider of providers) {
         try {
-          const raw = await chatWithProvider(provider, messages);
+          const raw = await chatWithProvider(provider, messages, chatOptions);
           const parsed = parseJsonFromModel(raw);
           return normalizeScriptPayload(parsed, sceneCount);
         } catch (error) {

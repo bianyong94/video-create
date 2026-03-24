@@ -210,6 +210,65 @@ const CHINESE_STOPWORDS = new Set([
   "镜头",
 ]);
 
+const VISUAL_NOISE_TERMS = [
+  "镜头",
+  "特写",
+  "中景",
+  "远景",
+  "俯拍",
+  "仰拍",
+  "顶光",
+  "暖光",
+  "冷光",
+  "光线",
+  "灯笼",
+  "构图",
+  "摄影",
+  "电影感",
+  "写实",
+  "cinematic",
+  "photography",
+  "lighting",
+  "camera",
+  "shot",
+  "wide shot",
+  "close up",
+  "medium shot",
+  "logo",
+  "watermark",
+  "text",
+];
+
+const HISTORY_ENTITY_TERMS = [
+  "秦始皇",
+  "统一六国",
+  "郡县制",
+  "中央集权",
+  "中国地图",
+  "中国版图",
+  "中国疆域",
+  "古代中国",
+  "秦朝",
+  "汉朝",
+  "唐朝",
+  "宋朝",
+  "元朝",
+  "明朝",
+  "清朝",
+  "诸侯国",
+  "王朝",
+  "版图",
+  "疆域",
+  "地图",
+  "历史地图",
+  "china",
+  "qin dynasty",
+  "qin shi huang",
+  "historical map",
+  "territory",
+  "dynasty",
+];
+
 const HISTORY_STRONG_KEYWORDS = [
   "map",
   "atlas",
@@ -320,12 +379,92 @@ function getCombinedText(scene: ScriptScene): string {
 }
 
 function buildBaseQuery(scene: ScriptScene): string {
-  const preferred = scene.stock_query?.trim();
-  if (preferred) {
-    return preferred.replace(/\s+/g, " ").slice(0, 90);
+  return buildSceneSearchQuery(scene);
+}
+
+function rankChinesePhrase(phrase: string, source: string): number {
+  let score = 0;
+  if (phrase.length >= 2 && phrase.length <= 8) score += 4;
+  if (source.includes(phrase)) score += 3;
+  if (HISTORY_ENTITY_TERMS.some((term) => phrase.includes(term) || term.includes(phrase))) {
+    score += 12;
+  }
+  if (MAP_CORE_KEYWORDS.some((term) => phrase.includes(term))) score += 8;
+  if (CHINA_CORE_KEYWORDS.some((term) => phrase.includes(term))) score += 10;
+  if (DYNASTY_CORE_KEYWORDS.some((term) => phrase.includes(term))) score += 8;
+  if (VISUAL_NOISE_TERMS.some((term) => phrase.includes(term.toLowerCase()))) score -= 10;
+  if (CHINESE_STOPWORDS.has(phrase)) score -= 8;
+  return score;
+}
+
+function extractChineseFocusTerms(text: string): string[] {
+  const normalized = normalizeText(text);
+  const directTerms = HISTORY_ENTITY_TERMS.filter(
+    (term) => /[\u4e00-\u9fff]/.test(term) && normalized.includes(term)
+  );
+  const tokenTerms = extractChineseTokens(normalized).filter(
+    (term) => term.length >= 2 && term.length <= 6
+  );
+  const phrases = unique([...directTerms, ...tokenTerms]);
+  const ranked = phrases
+    .map((phrase) => ({ phrase, score: rankChinesePhrase(phrase, normalized) }))
+    .filter((item) => item.score > 10)
+    .sort((a, b) => b.score - a.score || b.phrase.length - a.phrase.length)
+    .map((item) => item.phrase);
+
+  const compressed: string[] = [];
+  for (const phrase of ranked) {
+    if (compressed.some((existing) => existing.includes(phrase) || phrase.includes(existing))) {
+      continue;
+    }
+    compressed.push(phrase);
+    if (compressed.length >= 6) break;
   }
 
-  return [scene.image_prompt, scene.narration_text]
+  return compressed;
+}
+
+function extractEnglishFocusTerms(text: string): string[] {
+  const normalized = normalizeText(text);
+  return unique(
+    normalized
+      .split(" ")
+      .filter((token) => token.length >= 3)
+      .filter((token) => !VISUAL_NOISE_TERMS.includes(token))
+      .filter((token) => !["video", "footage", "cinematic", "documentary", "animation", "shot"].includes(token))
+  ).slice(0, 6);
+}
+
+export function buildSceneSearchQuery(scene: ScriptScene): string {
+  const stockQuery = scene.stock_query?.trim() ?? "";
+  const narration = scene.narration_text?.trim() ?? "";
+  const prompt = scene.image_prompt?.trim() ?? "";
+  const combined = [stockQuery, narration, prompt].filter(Boolean).join(" ");
+
+  if (hasChinese(combined)) {
+    const terms = unique([
+      ...extractChineseFocusTerms(`${stockQuery} ${narration}`),
+      ...extractChineseFocusTerms(narration),
+      ...extractChineseFocusTerms(stockQuery),
+      ...extractChineseFocusTerms(prompt),
+    ]).slice(0, 6);
+
+    if (terms.length) {
+      return terms.join(" ").slice(0, 90);
+    }
+  }
+
+  const englishTerms = unique([
+    ...extractEnglishFocusTerms(stockQuery),
+    ...extractEnglishFocusTerms(narration),
+    ...extractEnglishFocusTerms(prompt),
+  ]).slice(0, 6);
+
+  if (englishTerms.length) {
+    return englishTerms.join(" ").slice(0, 90);
+  }
+
+  return [narration, prompt]
     .join(" ")
     .replace(/[^A-Za-z0-9\u4e00-\u9fff\s-]+/g, " ")
     .replace(/\s+/g, " ")

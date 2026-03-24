@@ -9,6 +9,7 @@ import orchestratorRouter from "../modules/orchestrator/orchestrator.router";
 import baiduSearchRouter from "../modules/search/baiduSearch.router";
 import videoCandidatesRouter from "../modules/search/videoCandidates.router";
 import billingRouter from "./billing.router";
+import commentaryRouter from "../modules/commentary/commentary.router";
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use("/orchestrator", orchestratorRouter);
 router.use("/search", baiduSearchRouter);
 router.use("/search", videoCandidatesRouter);
 router.use("/billing", billingRouter);
+router.use("/commentary", commentaryRouter);
 
 export default router;

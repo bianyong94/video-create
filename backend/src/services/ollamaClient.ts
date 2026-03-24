@@ -5,6 +5,11 @@ export type OllamaMessage = {
   content: string;
 };
 
+type OllamaChatOptions = {
+  maxTokens?: number;
+  temperature?: number;
+};
+
 type OllamaChatResponse = {
   message?: {
     content?: string;
@@ -13,7 +18,8 @@ type OllamaChatResponse = {
 };
 
 export async function chatWithOllama(
-  messages: OllamaMessage[]
+  messages: OllamaMessage[],
+  options?: OllamaChatOptions
 ): Promise<string> {
   const config = getOllamaConfig();
   const controller = new AbortController();
@@ -31,7 +37,8 @@ export async function chatWithOllama(
         stream: false,
         messages,
         options: {
-          temperature: 0.2,
+          temperature: options?.temperature ?? 0.2,
+          num_predict: options?.maxTokens,
         },
       }),
     });

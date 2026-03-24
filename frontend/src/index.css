@@ -89,6 +89,12 @@ body {
   box-shadow: 0 8px 20px rgba(16, 32, 52, 0.05);
 }
 
+.commentary-workbench-panel {
+  background:
+    radial-gradient(circle at top right, rgba(0, 122, 112, 0.08), transparent 28%),
+    linear-gradient(180deg, #ffffff, #f7fbff);
+}
+
 .panel-title-row {
   display: flex;
   justify-content: space-between;
@@ -357,6 +363,91 @@ body {
   border-radius: 12px;
   padding: 12px;
   background: #fcfdff;
+}
+
+.commentary-project-card {
+  background: linear-gradient(135deg, #f6fbff 0%, #edf7f5 100%);
+}
+
+.commentary-settings-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.upload-dropzone {
+  position: relative;
+  min-height: 170px;
+  border: 1.5px dashed #a8bfd4;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f9fcff 0%, #f2f8ff 100%);
+  padding: 16px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 10px;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.15s ease;
+}
+
+.upload-dropzone.drag-active {
+  border-color: var(--brand);
+  background: linear-gradient(180deg, #f2fffc 0%, #e8f7f5 100%);
+  transform: translateY(-1px);
+}
+
+.upload-dropzone-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.upload-dropzone-copy strong {
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.upload-dropzone-copy span {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.upload-file-input {
+  display: none;
+}
+
+.commentary-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(0, 1.05fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.commentary-preview-card {
+  position: sticky;
+  top: 12px;
+}
+
+.commentary-preview-card video {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #000;
+  aspect-ratio: 16 / 9;
+}
+
+.commentary-text-card p {
+  margin: 0;
+  color: #2a3a4f;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.commentary-textarea {
+  min-height: 148px;
+  resize: vertical;
+  line-height: 1.55;
+  background: #ffffff;
+}
+
+.commentary-segment-card {
+  overflow: hidden;
 }
 
 .baidu-results {
@@ -653,6 +744,12 @@ audio {
   .settings-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .commentary-grid {
+    grid-template-columns: 1fr;
+  }
+  .commentary-preview-card {
+    position: static;
+  }
   .search-test-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -676,6 +773,9 @@ audio {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .settings-subgrid {
+    grid-template-columns: 1fr;
+  }
+  .commentary-settings-grid {
     grid-template-columns: 1fr;
   }
   .search-test-grid {

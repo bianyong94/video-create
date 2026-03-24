@@ -13,6 +13,10 @@ import {
   buildSceneSearchPlan,
   evaluateSearchCandidate,
 } from "../visual/searchPlanner";
+import {
+  fetchYoutubeTranscript,
+  scoreTranscriptMatch,
+} from "./youtubeTranscript.service";
 import { promisify } from "util";
 import type {
   VideoCandidateSearchInput,
@@ -22,6 +26,7 @@ import type {
 const execFile = promisify(execFileCallback);
 const PREVIEW_SECONDS = 8;
 const PREVIEW_DIR = "video-previews";
+const YOUTUBE_TRANSCRIPT_RERANK_LIMIT = 4;
 const YOUTUBE_PLAYER_CLIENTS = [
   "android",
   "android,web",
@@ -330,8 +335,34 @@ async function searchPageCandidates(
   const plan = buildSceneSearchPlan(scene, aspectRatio);
   const previewDir = await ensurePreviewDir();
   const youtube = await searchYouTubeVideoCandidates(query, Math.max(1, count - 2));
+  const transcriptEnhanced = await mapWithConcurrency(
+    youtube.slice(0, Math.min(YOUTUBE_TRANSCRIPT_RERANK_LIMIT, youtube.length)),
+    2,
+    async (candidate) => {
+      try {
+        const transcript = await fetchYoutubeTranscript(candidate.media_url);
+        const transcriptMatch = scoreTranscriptMatch(query, transcript);
+        return {
+          ...candidate,
+          transcript_match_score: transcriptMatch.transcriptMatchScore,
+          transcript_matched_text: transcriptMatch.transcriptMatchedText,
+          clip_start_sec: transcriptMatch.clipStartSec,
+          clip_end_sec: transcriptMatch.clipEndSec,
+          page_snippet:
+            transcriptMatch.transcriptMatchedText ?? candidate.page_snippet,
+        };
+      } catch {
+        return candidate;
+      }
+    }
+  );
+  const transcriptMap = new Map(transcriptEnhanced.map((item) => [item.id, item]));
+  const youtubeWithTranscript = youtube.map(
+    (candidate) => transcriptMap.get(candidate.id) ?? candidate
+  );
+
   const youtubeResults = shouldDownloadYoutubePreview(previewMode)
-    ? await mapWithConcurrency(youtube.slice(0, Math.min(2, youtube.length)), 1, async (candidate) => {
+    ? await mapWithConcurrency(youtubeWithTranscript.slice(0, Math.min(2, youtubeWithTranscript.length)), 1, async (candidate) => {
         const videoId = candidate.media_url.split("v=").pop()?.split("&")[0];
         if (!videoId) return null;
         const fileStem = `youtube-${candidate.id}`;
@@ -340,10 +371,10 @@ async function searchPageCandidates(
         try {
           await downloadYoutubeVideo(candidate.media_url, fullPath);
           const mediaDuration = await probeDurationSeconds(fullPath);
-          const startSeconds = pickPreviewStart(
-            mediaDuration ?? candidate.duration_sec,
-            PREVIEW_SECONDS
-          );
+          const transcriptStart = candidate.clip_start_sec;
+          const startSeconds = typeof transcriptStart === "number"
+            ? Math.max(0, Math.floor(transcriptStart))
+            : pickPreviewStart(mediaDuration ?? candidate.duration_sec, PREVIEW_SECONDS);
           await createPreviewClip(fullPath, previewPath, PREVIEW_SECONDS, startSeconds);
           await fs.unlink(fullPath).catch(() => undefined);
           const matchEvaluation = evaluateSearchCandidate(
@@ -361,9 +392,15 @@ async function searchPageCandidates(
           return {
             ...candidate,
             preview_path: previewPath,
-            match_score: matchEvaluation.matchScore,
+            match_score: Math.min(
+              100,
+              matchEvaluation.matchScore + Math.round((candidate.transcript_match_score ?? 0) * 0.45)
+            ),
             match_passed: matchEvaluation.matchPassed,
-            match_reasons: matchEvaluation.matchReasons,
+            match_reasons: [
+              ...(candidate.transcript_match_score ? ["字幕正文已命中"] : []),
+              ...matchEvaluation.matchReasons,
+            ],
           };
         } catch {
           await fs.unlink(fullPath).catch(() => undefined);
@@ -385,13 +422,19 @@ async function searchPageCandidates(
             page_snippet:
               candidate.page_snippet ??
               "YouTube 视频候选，预览下载失败，点击可打开原始页面。",
-            match_score: matchEvaluation.matchScore,
+            match_score: Math.min(
+              100,
+              matchEvaluation.matchScore + Math.round((candidate.transcript_match_score ?? 0) * 0.45)
+            ),
             match_passed: matchEvaluation.matchPassed,
-            match_reasons: matchEvaluation.matchReasons,
+            match_reasons: [
+              ...(candidate.transcript_match_score ? ["字幕正文已命中"] : []),
+              ...matchEvaluation.matchReasons,
+            ],
           };
         }
       })
-    : youtube.map((candidate) => {
+    : youtubeWithTranscript.map((candidate) => {
         const matchEvaluation = evaluateSearchCandidate(
           {
             mediaType: "video",
@@ -406,9 +449,15 @@ async function searchPageCandidates(
         );
         return {
           ...candidate,
-          match_score: matchEvaluation.matchScore,
+          match_score: Math.min(
+            100,
+            matchEvaluation.matchScore + Math.round((candidate.transcript_match_score ?? 0) * 0.45)
+          ),
           match_passed: matchEvaluation.matchPassed,
-          match_reasons: matchEvaluation.matchReasons,
+          match_reasons: [
+            ...(candidate.transcript_match_score ? ["字幕正文已命中"] : []),
+            ...matchEvaluation.matchReasons,
+          ],
         };
       });
 
